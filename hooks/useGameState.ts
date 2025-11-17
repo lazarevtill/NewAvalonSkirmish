@@ -864,302 +864,240 @@ export const useGameState = () => {
       ...currentState,
       players: currentState.players.map(p => 
         p.id === playerId 
-          ? { ...p, deck: createDeck(deckType, playerId, p.name), selectedDeck: deckType, hand: [], discard: [], announcedCard: null } 
+          ? { ...p, deck: createDeck(deckType, playerId, p.name), selectedDeck: deckType, hand: [], discard: [], announcedCard: null }
           : p
       )
     }});
   }, [updateState, createDeck]);
-
-  const loadCustomDeck = useCallback((playerId: number, customDeckFile: CustomDeckFile) => {
+  
+  /**
+   * Loads a custom deck file for a player.
+   * @param {number} playerId The ID of the player.
+   * @param {CustomDeckFile} deckFile The parsed custom deck file.
+   */
+  const loadCustomDeck = useCallback((playerId: number, deckFile: CustomDeckFile) => {
     updateState(currentState => {
+        if (currentState.isGameStarted) return currentState;
+        
         const player = currentState.players.find(p => p.id === playerId);
-        if (!player || currentState.isGameStarted) return currentState;
+        if (!player) return currentState;
 
         const newDeck: Card[] = [];
-        for (const entry of customDeckFile.cards) {
-            const cardDef = getCardDefinition(entry.cardId);
-            if (cardDef) {
-                const isCommand = commandCardIds.has(entry.cardId);
-                const deckFile = !isCommand ? deckFiles.find(df => df.cards.some(c => c.cardId === entry.cardId)) : undefined;
+        let cardInstanceCounter = new Map<string, number>();
 
-                for (let i = 0; i < entry.quantity; i++) {
-                    const cardKey = entry.cardId.toUpperCase().replace(/-/g, '_');
-                    
-                    let deckTypeValue: DeckType;
-                    let prefix: string;
+        for (const { cardId, quantity } of deckFile.cards) {
+            const cardDef = getCardDefinition(cardId);
+            if (!cardDef) continue;
 
-                    if (isCommand) {
-                        deckTypeValue = DeckType.Command;
-                        prefix = 'CMD';
-                    } else if (deckFile) {
-                        deckTypeValue = deckFile.id;
-                        prefix = deckFile.id.substring(0, 3).toUpperCase();
-                    } else {
-                        // Fallback for cards not in standard decks (e.g. from older versions)
-                        deckTypeValue = DeckType.Custom; 
-                        prefix = 'CUS';
-                    }
+            const isCommand = commandCardIds.has(cardId);
+            const deckType = isCommand ? DeckType.Command : DeckType.Custom;
+            const prefix = isCommand ? 'CMD' : 'CUS';
 
-                    const cardInstance: Card = {
-                        ...cardDef,
-                        deck: deckTypeValue,
-                        id: `${prefix}_${cardKey}_custom_${i}_${Date.now()}`,
-                        ownerId: playerId,
-                        ownerName: player.name,
-                    };
-                    newDeck.push(cardInstance);
-                }
+            for (let i = 0; i < quantity; i++) {
+                const instanceNum = (cardInstanceCounter.get(cardId) || 0) + 1;
+                cardInstanceCounter.set(cardId, instanceNum);
+
+                newDeck.push({
+                    ...cardDef,
+                    id: `${prefix}_${cardId.toUpperCase()}_${instanceNum}`,
+                    deck: deckType,
+                    ownerId: playerId,
+                    ownerName: player.name,
+                });
             }
         }
-
-        const updatedPlayer = {
-            ...player,
-            deck: shuffleDeck(newDeck),
-            selectedDeck: DeckType.Custom,
-            hand: [],
-            discard: [],
-            announcedCard: null,
-        };
-
+        
         return {
             ...currentState,
-            players: currentState.players.map(p => p.id === playerId ? updatedPlayer : p)
+            players: currentState.players.map(p =>
+                p.id === playerId
+                    ? { ...p, deck: shuffleDeck(newDeck), selectedDeck: DeckType.Custom, hand: [], discard: [], announcedCard: null }
+                    : p
+            )
         };
     });
   }, [updateState]);
-  
+
   /**
-   * Moves the top card of a player's deck to their hand.
-   * @param {number} playerId - The ID of the player drawing the card.
+   * Draws a card from a player's deck and adds it to their hand.
+   * @param {number} playerId - The ID of the player drawing a card.
    */
   const drawCard = useCallback((playerId: number) => {
     updateState(currentState => {
-      const player = currentState.players.find(p => p.id === playerId);
-      if (!player || player.deck.length === 0 || !currentState.isGameStarted) return currentState;
-      
-      const newDeck = [...player.deck];
-      const drawnCard = newDeck.pop()!;
-      const newHand = [...player.hand, drawnCard];
-
-      // Preload image if it hasn't been seen this browser session
-      if (drawnCard.imageUrl && !preloadedImageUrls.current.has(drawnCard.imageUrl)) {
-        const img = new Image();
-        img.src = drawnCard.imageUrl;
-        preloadedImageUrls.current.add(drawnCard.imageUrl);
-      }
-
-      return {
-        ...currentState,
-        players: currentState.players.map(p => 
-          p.id === playerId ? { ...p, deck: newDeck, hand: newHand } : p
-        )
-      };
-    });
-  }, [updateState]);
-  
-  /**
-   * A generic function to move any item (card, token) from a source to a target location.
-   * @param {DragItem} item - The item being moved.
-   * @param {DropTarget} targetInfo - The destination for the item.
-   */
-  const moveItem = useCallback((item: DragItem, targetInfo: DropTarget) => {
-    if (!item) return;
-
-    updateState(currentState => {
       if (!currentState.isGameStarted) return currentState;
-
-      // Prevent tokens and counters from being moved to invalid locations.
-      const isToken = item.card.deck === DeckType.Tokens;
-      const isCounter = item.card.deck === 'counter';
-      if ((isToken || isCounter) && (targetInfo.target === 'hand' || targetInfo.target === 'deck')) {
-          return currentState; // Abort move, return original state.
-      }
-
-      // Prevent dropping on an occupied board cell.
-      if (targetInfo.target === 'board' && targetInfo.boardCoords) {
-          const { row, col } = targetInfo.boardCoords;
-          if (currentState.board[row][col].card !== null) {
-              return currentState; // Abort the move.
-          }
-      }
+      const player = currentState.players.find(p => p.id === playerId);
+      if (!player || player.deck.length === 0) return currentState;
       
-      // Prevent dropping into the announced slot if it's already occupied.
-      if (targetInfo.target === 'announced' && targetInfo.playerId) {
-        const targetPlayer = currentState.players.find(p => p.id === targetInfo.playerId);
-        if (targetPlayer?.announcedCard) {
-          return currentState; // Abort move if slot is occupied.
-        }
+      const newState = JSON.parse(JSON.stringify(currentState));
+      const playerToUpdate = newState.players.find((p: Player) => p.id === playerId)!;
+      const cardDrawn = playerToUpdate.deck.shift();
+      if (cardDrawn) {
+        playerToUpdate.hand.push(cardDrawn);
       }
-
-      const targetPlayerForDiscard = targetInfo.playerId ? currentState.players.find(p => p.id === targetInfo.playerId) : null;
-      // Prevent non-owners from discarding cards, unless it's a dummy's card.
-      if (targetInfo.target === 'discard' && !targetPlayerForDiscard?.isDummy) {
-          if (localPlayerId !== item.card.ownerId || item.card.ownerId !== targetInfo.playerId) {
-              return currentState; // Abort move: Only owners can discard their own cards to their own pile.
-          }
-      }
-      
-      const newState: GameState = JSON.parse(JSON.stringify(currentState));
-      let boardWasModified = false;
-      const allPlayers = newState.players;
-      
-      let cardToMove;
-      if (item.source === 'token_panel' || item.source === 'counter_panel') {
-        const actingPlayer = allPlayers.find(p => p.id === localPlayerId);
-        cardToMove = {
-          ...item.card,
-          id: crypto.randomUUID(),
-          statuses: [],
-          ownerId: localPlayerId ?? undefined,
-          ownerName: actingPlayer?.name,
-        };
-      } else {
-        cardToMove = { ...item.card };
-      }
-
-      // --- Remove item from its source location ---
-      let sourcePlayer = item.playerId ? newState.players.find(p => p.id === item.playerId) : null;
-      
-      if (item.source === 'hand' && sourcePlayer && item.cardIndex !== undefined) {
-          sourcePlayer.hand.splice(item.cardIndex, 1);
-      } else if (item.source === 'board' && item.boardCoords) {
-          newState.board[item.boardCoords.row][item.boardCoords.col].card = null;
-          // Preserve non-board-specific statuses when moving from board
-          cardToMove.statuses = (cardToMove.statuses || []).filter(
-              s => s.type !== 'Support' && s.type !== 'Threat' && s.type !== 'LastPlayed'
-          );
-
-          // If this card is going to hand, reset its face-down status for the next play.
-          if (targetInfo.target === 'hand') {
-              const hasRevealedStatus = cardToMove.statuses?.some(s => s.type === 'Revealed');
-              if (!hasRevealedStatus) {
-                  // If not revealed, it should be played face-down next time.
-                  cardToMove.isFaceDown = true;
-              } else {
-                  // If it IS revealed, it should be played face-up.
-                  cardToMove.isFaceDown = false;
-              }
-          }
-          boardWasModified = true;
-      } else if (item.source === 'discard' && sourcePlayer && item.cardIndex !== undefined) {
-          sourcePlayer.discard.splice(item.cardIndex, 1);
-      } else if (item.source === 'deck' && sourcePlayer && item.cardIndex !== undefined) {
-          sourcePlayer.deck.splice(item.cardIndex, 1);
-      } else if (item.source === 'announced' && sourcePlayer) {
-          sourcePlayer.announcedCard = null;
-      }
-      
-      if (cardToMove.ownerId !== undefined) {
-          const owner = allPlayers.find(p => p.id === cardToMove.ownerId);
-          cardToMove.ownerName = owner?.name;
-      }
-
-      // Tokens and Counters are removed from the game if they go to discard.
-      if ((isToken || isCounter) && targetInfo.target === 'discard') {
-          if (boardWasModified) {
-              newState.board = recalculateBoardStatuses(newState);
-          }
-          return newState;
-      }
-
-      // Clear "Revealed" status when card goes to discard or deck.
-      if (targetInfo.target === 'discard' || targetInfo.target === 'deck') {
-          cardToMove.statuses = (cardToMove.statuses || []).filter(s => s.type !== 'Revealed');
-      }
-
-      if (targetInfo.target === 'board' && targetInfo.boardCoords) {
-          const { row, col } = targetInfo.boardCoords;
-           // Default to face down when dragging from hand for the first time
-           if (item.source === 'hand' && cardToMove.isFaceDown === undefined) {
-                cardToMove.isFaceDown = true;
-           }
-          newState.board[row][col].card = cardToMove;
-          boardWasModified = true;
-
-          // --- "Last Played" Marker Logic ---
-          if (localPlayerId !== null) {
-              let sourceOwnerId: number | undefined;
-              if (item.source === 'hand' || item.source === 'deck' || item.source === 'discard' || item.source === 'announced') {
-                  sourceOwnerId = item.playerId;
-              } else if (item.source === 'board') {
-                  sourceOwnerId = item.card.ownerId;
-              } else { // token_panel, counter_panel
-                  sourceOwnerId = localPlayerId;
-              }
-              
-              if (sourceOwnerId !== undefined) {
-                  // Find and remove this player's previous 'LastPlayed' marker from the board.
-                  for (const boardRow of newState.board) {
-                      for (const cell of boardRow) {
-                          if (cell.card?.statuses) {
-                              const idx = cell.card.statuses.findIndex(s => s.type === 'LastPlayed' && s.addedByPlayerId === sourceOwnerId);
-                              if (idx > -1) {
-                                  cell.card.statuses.splice(idx, 1);
-                              }
-                          }
-                      }
-                  }
-                  
-                  if (!cardToMove.statuses) cardToMove.statuses = [];
-                  cardToMove.statuses.unshift({ type: 'LastPlayed', addedByPlayerId: sourceOwnerId });
-              }
-          }
-      } else {
-          let targetPlayer = targetInfo.playerId ? newState.players.find(p => p.id === targetInfo.playerId) : null;
-          if (targetPlayer) {
-              if (targetInfo.target === 'hand') {
-                targetPlayer.hand.push(cardToMove);
-              } else if (targetInfo.target === 'deck') {
-                   if (targetInfo.deckPosition === 'bottom') {
-                       targetPlayer.deck.unshift(cardToMove); // Add to the beginning (bottom)
-                   } else {
-                       targetPlayer.deck.push(cardToMove); // Add to the end (top)
-                   }
-              } else if (targetInfo.target === 'discard') {
-                // Cards entering the discard pile are always face-up.
-                cardToMove.isFaceDown = false;
-                targetPlayer.discard.push(cardToMove);
-              } else if (targetInfo.target === 'announced') {
-                  cardToMove.isFaceDown = false;
-                  targetPlayer.announcedCard = cardToMove;
-              }
-          }
-      }
-      
-      if (boardWasModified) {
-          newState.board = recalculateBoardStatuses(newState);
-      }
-
       return newState;
     });
-  }, [updateState, localPlayerId]);
-  
-  /**
-   * Handles the drop event from the drag-and-drop system.
-   * @param {DragItem} item - The item that was dropped.
-   * @param {DropTarget} targetInfo - The target where the item was dropped.
-   */
-  const handleDrop = useCallback((item: DragItem, targetInfo: DropTarget) => {
-    moveItem(item, targetInfo);
-  }, [moveItem]);
+  }, [updateState]);
 
   /**
-   * Shuffles a specific player's deck.
+   * Shuffles a player's deck.
    * @param {number} playerId - The ID of the player whose deck to shuffle.
    */
   const shufflePlayerDeck = useCallback((playerId: number) => {
     updateState(currentState => {
+      if (!currentState.isGameStarted) return currentState;
       const player = currentState.players.find(p => p.id === playerId);
-      if (player && currentState.isGameStarted) {
-          const shuffledDeck = shuffleDeck(player.deck);
-          return {
-            ...currentState,
-            players: currentState.players.map(p => p.id === playerId ? { ...p, deck: shuffledDeck } : p)
-          };
-      }
-      return currentState;
+      if (!player) return currentState;
+      
+      const newState = JSON.parse(JSON.stringify(currentState));
+      const playerToUpdate = newState.players.find((p: Player) => p.id === playerId)!;
+      playerToUpdate.deck = shuffleDeck(playerToUpdate.deck);
+      return newState;
     });
-  },[updateState]);
+  }, [updateState]);
+  
+  /**
+   * Moves a card from one location to another (e.g., hand to board).
+   * @param {DragItem} item - The item being dragged.
+   * @param {DropTarget} target - The location to drop the item.
+   */
+  const moveItem = useCallback((item: DragItem, target: DropTarget) => {
+    updateState(currentState => {
+        if (!currentState.isGameStarted) return currentState;
+        // Create a deep copy to avoid direct state mutation.
+        const newState: GameState = JSON.parse(JSON.stringify(currentState));
+        
+        // Ownership check: Prevent non-owners from moving cards from board to hand/deck/discard
+        if (item.source === 'board' && ['hand', 'deck', 'discard'].includes(target.target)) {
+            const cardOwnerId = item.card.ownerId;
+            const cardOwner = newState.players.find(p => p.id === cardOwnerId);
+            const isOwner = cardOwnerId === localPlayerIdRef.current;
+            const isDummyCard = !!cardOwner?.isDummy;
+
+            if (!isOwner && !isDummyCard) {
+                // Abort the move if the current player is not the owner and it's not a dummy card.
+                return currentState;
+            }
+        }
+        
+        let cardToMove: Card = { ...item.card };
+
+        // --- Remove the card from its source location ---
+        if (item.source === 'hand' && item.playerId !== undefined && item.cardIndex !== undefined) {
+            const player = newState.players.find(p => p.id === item.playerId);
+            if (player) player.hand.splice(item.cardIndex, 1);
+        } else if (item.source === 'board' && item.boardCoords) {
+            newState.board[item.boardCoords.row][item.boardCoords.col].card = null;
+        } else if (item.source === 'discard' && item.playerId !== undefined && item.cardIndex !== undefined) {
+            const player = newState.players.find(p => p.id === item.playerId);
+            if (player) player.discard.splice(item.cardIndex, 1);
+        } else if (item.source === 'deck' && item.playerId !== undefined && item.cardIndex !== undefined) {
+             const player = newState.players.find(p => p.id === item.playerId);
+            if (player) player.deck.splice(item.cardIndex, 1);
+        } else if (item.source === 'announced' && item.playerId !== undefined) {
+            const player = newState.players.find(p => p.id === item.playerId);
+            if (player) player.announcedCard = null;
+        }
+        // For 'token_panel' or 'counter_panel', there's no source to remove from.
+
+        // --- Pre-process card before adding to target ---
+        const isReturningToStorage = ['hand', 'deck', 'discard'].includes(target.target);
+
+        // When a card returns to a 'storage' location (hand, deck, discard),
+        // clear all temporary statuses except 'Revealed'.
+        if (isReturningToStorage && cardToMove.statuses) {
+            cardToMove.statuses = cardToMove.statuses.filter(status => status.type === 'Revealed');
+        }
+
+        // --- Add the card to the target location ---
+        if (target.target === 'hand' && target.playerId !== undefined) {
+            const player = newState.players.find(p => p.id === target.playerId);
+            // Tokens and counters cannot go to hand.
+            if (player && cardToMove.deck !== 'counter' && cardToMove.deck !== DeckType.Tokens) {
+                player.hand.push(cardToMove);
+            }
+        } else if (target.target === 'board' && target.boardCoords) {
+            const cell = newState.board[target.boardCoords.row][target.boardCoords.col];
+            if (!cell.card) { // Only place if the cell is empty
+                // Respect explicit faceDown status from playMode, otherwise apply defaults.
+                if (typeof item.card.isFaceDown === 'boolean') {
+                    cardToMove.isFaceDown = item.card.isFaceDown;
+                } else {
+                    // Defaults for drag-and-drop
+                    if (item.source === 'hand') {
+                        cardToMove.isFaceDown = true; // from hand -> face down
+                    } else if (item.source === 'token_panel') {
+                        cardToMove.isFaceDown = false; // from token panel -> face up
+                    }
+                }
+
+                // Assign owner to new tokens when they are first played
+                if (item.source === 'token_panel') {
+                    const player = newState.players.find(p => p.id === localPlayerIdRef.current);
+                    if (player) {
+                        cardToMove.ownerId = player.id;
+                        cardToMove.ownerName = player.name;
+                    }
+                }
+                
+                cell.card = cardToMove;
+                
+                // If a card is played from an external source (not just moved on the board),
+                // it becomes the "last played" card for its owner.
+                const isPlayedFromOffBoard = item.source !== 'board' && item.source !== 'announced';
+                if (isPlayedFromOffBoard && cardToMove.ownerId) {
+                    const currentPlayerId = cardToMove.ownerId;
+                    
+                    // Clear LastPlayed from any other card owned by this player
+                    newState.board.forEach(row => row.forEach(c => {
+                        if (c.card?.ownerId === currentPlayerId && c.card?.statuses) {
+                            c.card.statuses = c.card.statuses.filter(s => s.type !== 'LastPlayed');
+                        }
+                    }));
+                    newState.players.forEach(p => {
+                        if (p.id === currentPlayerId && p.announcedCard?.statuses) {
+                            p.announcedCard.statuses = p.announcedCard.statuses.filter(s => s.type !== 'LastPlayed');
+                        }
+                    });
+                    
+                    if (!cardToMove.statuses) cardToMove.statuses = [];
+                    cardToMove.statuses.push({ type: 'LastPlayed', addedByPlayerId: cardToMove.ownerId });
+                }
+            }
+        } else if (target.target === 'discard' && target.playerId !== undefined) {
+             // If a token is moved to discard, it's permanently removed from the game.
+            if (cardToMove.deck === DeckType.Tokens) {
+                // Do nothing, effectively deleting it as it was already removed from source.
+            } else {
+                const player = newState.players.find(p => p.id === target.playerId);
+                if (player) player.discard.unshift(cardToMove);
+            }
+        } else if (target.target === 'deck' && target.playerId !== undefined) {
+            const player = newState.players.find(p => p.id === target.playerId);
+            // Tokens and counters cannot go to deck.
+            if (player && cardToMove.deck !== 'counter' && cardToMove.deck !== DeckType.Tokens) {
+                if (target.deckPosition === 'bottom') {
+                    player.deck.push(cardToMove);
+                } else { // Default to top
+                    player.deck.unshift(cardToMove);
+                }
+            }
+        } else if (target.target === 'announced' && target.playerId !== undefined) {
+            const player = newState.players.find(p => p.id === target.playerId);
+            if (player && !player.announcedCard) {
+                player.announcedCard = cardToMove;
+            }
+        }
+
+        // After any move that affects the board, recalculate statuses like Support and Threat.
+        newState.board = recalculateBoardStatuses(newState);
+
+        return newState;
+    });
+  }, [updateState]);
+
+  const handleDrop = useCallback((item: DragItem, target: DropTarget) => {
+    moveItem(item, target);
+  }, [moveItem]);
 
   return {
     gameState,
@@ -1167,7 +1105,6 @@ export const useGameState = () => {
     setLocalPlayerId,
     createGame,
     joinGame,
-    startGame,
     startReadyCheck,
     playerReady,
     assignTeams,
@@ -1182,6 +1119,12 @@ export const useGameState = () => {
     loadCustomDeck,
     drawCard,
     handleDrop,
+    draggedItem,
+    setDraggedItem,
+    connectionStatus,
+    gamesList,
+    requestGamesList,
+    exitGame,
     moveItem,
     shufflePlayerDeck,
     addBoardCardStatus,
@@ -1194,14 +1137,8 @@ export const useGameState = () => {
     revealBoardCard,
     requestCardReveal,
     respondToRevealRequest,
-    removeRevealedStatus,
     syncGame,
+    removeRevealedStatus,
     resetGame,
-    draggedItem,
-    setDraggedItem,
-    connectionStatus,
-    gamesList,
-    requestGamesList,
-    exitGame,
   };
 };

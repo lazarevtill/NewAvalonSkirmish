@@ -397,8 +397,12 @@ export default function App() {
         if (isVisible || (isOwner && card.isFaceDown)) {
             items.push({ label: 'View', isBold: true, onClick: () => setViewingCard({ card, player: owner }) });
         }
-        if (isBoardItem && canControl && !card.isFaceDown) {
-            items.push({ label: 'Flip Face Down', onClick: () => flipBoardCardFaceDown(data.boardCoords) });
+        if (isBoardItem && canControl) {
+             if (card.isFaceDown) {
+                items.push({ label: 'Flip Face Up', isBold: true, onClick: () => flipBoardCard(data.boardCoords) });
+            } else {
+                items.push({ label: 'Flip Face Down', onClick: () => flipBoardCardFaceDown(data.boardCoords) });
+            }
         }
 
         const sourceItem: DragItem = isBoardItem
@@ -411,7 +415,6 @@ export default function App() {
         // --- Reveal Actions (Board only) ---
         if (isBoardItem) {
             if (canControl && card.isFaceDown) {
-                items.push({ label: 'Flip Face Up', isBold: true, onClick: () => flipBoardCard(data.boardCoords) });
                 items.push({ label: 'Reveal to All', onClick: () => revealBoardCard(data.boardCoords, 'all') });
             }
             if (!isOwner && !isVisible) {
@@ -428,7 +431,8 @@ export default function App() {
         if (canControl && isVisible) {
             items.push({ label: 'To Hand', disabled: isSpecialItem, onClick: () => moveItem(sourceItem, { target: 'hand', playerId: ownerId }) });
             if (ownerId) {
-                items.push({ label: 'To Discard', onClick: () => moveItem(sourceItem, { target: 'discard', playerId: ownerId }) });
+                const discardLabel = isSpecialItem ? 'Remove' : 'To Discard';
+                items.push({ label: discardLabel, onClick: () => moveItem(sourceItem, { target: 'discard', playerId: ownerId }) });
                 items.push({ label: 'To Deck Top', disabled: isSpecialItem, onClick: () => moveItem(sourceItem, { target: 'deck', playerId: ownerId, deckPosition: 'top'}) });
                 items.push({ label: 'To Deck Bottom', disabled: isSpecialItem, onClick: () => moveItem(sourceItem, { target: 'deck', playerId: ownerId, deckPosition: 'bottom'}) });
             }
@@ -481,8 +485,24 @@ export default function App() {
             }
         }
         
-    // Logic to build menu for cards in hand, discard, deck, or token panel.
-    } else if (['handCard', 'discardCard', 'token_panel_item', 'deckCard'].includes(type)) {
+    // Logic for token panel items (fixed crash and added new options)
+    } else if (type === 'token_panel_item') {
+        const { card } = data;
+        const sourceItem: DragItem = { card, source: 'token_panel' };
+
+        items.push({ label: 'View', isBold: true, onClick: () => setViewingCard({ card }) });
+        items.push({ isDivider: true });
+        items.push({ label: 'Play Face Up', onClick: () => {
+            closeAllModals();
+            setPlayMode({ card, sourceItem, faceDown: false });
+        }});
+        items.push({ label: 'Play Face Down', onClick: () => {
+            closeAllModals();
+            setPlayMode({ card, sourceItem, faceDown: true });
+        }});
+
+    // Logic to build menu for cards in hand, discard, deck.
+    } else if (['handCard', 'discardCard', 'deckCard'].includes(type)) {
         const { card, boardCoords, player, cardIndex } = data;
         const canControl = player.id === localPlayerId || !!player.isDummy;
         const localP = gameState.players.find(p => p.id === localPlayerId);
@@ -491,15 +511,14 @@ export default function App() {
         const isRevealedByRequest = card.statuses?.some(s => s.type === 'Revealed' && s.addedByPlayerId === localPlayerId);
         
         const isVisible = (() => {
-            if (type !== 'handCard') return true; // discard, deck, tokens always visible in their modals
+            if (type !== 'handCard') return true; // discard, deck always visible in their modals
             return player.id === localPlayerId || isTeammate || !!player.isDummy || !!player.isDisconnected || isRevealedToMe || isRevealedByRequest;
         })();
         
         let source: DragItem['source'];
         if (type === 'handCard') source = 'hand';
         else if (type === 'discardCard') source = 'discard';
-        else if (type === 'deckCard') source = 'deck';
-        else source = 'token_panel';
+        else source = 'deck';
 
         const sourceItem: DragItem = { card, source, playerId: player?.id, cardIndex, boardCoords };
         const ownerId = card.ownerId;
@@ -514,13 +533,13 @@ export default function App() {
         if (canControl) {
             // Play Actions
             if (type === 'handCard') {
-                items.push({ label: 'Play Face Down', isBold: true, onClick: () => {
+                items.push({ label: 'Play', isBold: true, onClick: () => {
                     closeAllModals();
                     setPlayMode({ card, sourceItem, faceDown: true });
                 }});
-                items.push({ label: 'Play Face Up', onClick: () => {
+                 items.push({ label: 'Play Face Up', onClick: () => {
                     closeAllModals();
-                    setPlayMode({ card, sourceItem });
+                    setPlayMode({ card, sourceItem, faceDown: false });
                 }});
             } else if (isVisible && ['discardCard', 'deckCard'].includes(type)) {
                 items.push({ label: 'Play Face Down', isBold: true, onClick: () => {
@@ -528,11 +547,6 @@ export default function App() {
                     setPlayMode({ card, sourceItem, faceDown: true });
                 }});
                  items.push({ label: 'Play Face Up', onClick: () => {
-                    closeAllModals();
-                    setPlayMode({ card, sourceItem });
-                }});
-            } else if (isVisible && type === 'token_panel_item') {
-                 items.push({ label: 'Play', isBold: true, onClick: () => {
                     closeAllModals();
                     setPlayMode({ card, sourceItem });
                 }});
