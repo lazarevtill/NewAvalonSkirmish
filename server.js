@@ -26,8 +26,10 @@ if (!fs.existsSync(LOGS_DIR)) {
 const gameStates = new Map(); // gameId -> gameState
 const clientGameMap = new Map(); // ws_client -> gameId
 const gameLogs = new Map(); // gameId -> string[]
-const gameTerminationTimers = new Map(); // gameId -> NodeJS.Timeout
+const gameTerminationTimers = new Map(); // gameId -> NodeJS.Timeout (Empty game timeout)
+const gameInactivityTimers = new Map(); // gameId -> NodeJS.Timeout (Idle game timeout)
 const MAX_PLAYERS = 4;
+const INACTIVITY_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
 
 let cardDatabase = {};
 let tokenDatabase = {};
@@ -202,6 +204,12 @@ const endGame = (gameId, reason) => {
         clearTimeout(timerId);
         gameTerminationTimers.delete(gameId);
     }
+
+    const inactivityTimerId = gameInactivityTimers.get(gameId);
+    if (inactivityTimerId) {
+        clearTimeout(inactivityTimerId);
+        gameInactivityTimers.delete(gameId);
+    }
     
     // 3. Disconnect any remaining clients (spectators) in that game
     wss.clients.forEach(client => {
@@ -212,6 +220,31 @@ const endGame = (gameId, reason) => {
 
     // 4. Update the public games list for all clients
     broadcastGamesList();
+};
+
+/**
+ * Resets the inactivity timer for a game. 
+ * If the timer expires, the game is terminated.
+ * @param {string} gameId The ID of the game.
+ */
+const resetInactivityTimer = (gameId) => {
+    if (!gameId) return;
+
+    // Clear existing timer
+    if (gameInactivityTimers.has(gameId)) {
+        clearTimeout(gameInactivityTimers.get(gameId));
+    }
+
+    // Set new timer
+    const timerId = setTimeout(() => {
+        const gameState = gameStates.get(gameId);
+        if (gameState) {
+            logToGame(gameId, 'Game terminated due to inactivity (20 minutes without action).');
+            endGame(gameId, '20 minutes inactivity');
+        }
+    }, INACTIVITY_TIMEOUT_MS);
+
+    gameInactivityTimers.set(gameId, timerId);
 };
 
 /**
@@ -229,7 +262,7 @@ const scheduleGameTermination = (gameId) => {
         // An active player is one who is not a dummy and not disconnected.
         const activePlayers = gameState ? gameState.players.filter(p => !p.isDummy && !p.isDisconnected) : [];
         if (activePlayers.length === 0) {
-            endGame(gameId, 'inactivity timeout');
+            endGame(gameId, 'inactivity timeout (empty game)');
         } else {
              gameTerminationTimers.delete(gameId); // A player reconnected, so just delete the timer
         }
@@ -434,6 +467,8 @@ wss.on('connection', ws => {
                     clientGameMap.set(ws, gameId);
                     ws.gameId = gameId;
                     
+                    resetInactivityTimer(gameId); // Activity: Player joined
+
                     // --- 1. Reconnection Logic ---
                     if (playerToken) {
                         const playerToReconnect = gameState.players.find(p => p.playerToken === playerToken && p.isDisconnected);
@@ -516,11 +551,17 @@ wss.on('connection', ws => {
                           clientGameMap.set(ws, gameIdToUpdate);
                           ws.gameId = gameIdToUpdate;
                       }
+                      
+                      resetInactivityTimer(gameIdToUpdate); // Activity: Game state updated
+
                       logToGame(gameIdToUpdate, `Game state updated by player ${ws.playerId || 'spectator'}.`);
                       gameStates.set(gameIdToUpdate, updatedGameState);
                       broadcastState(gameIdToUpdate, updatedGameState, ws);
                     } else if (gameIdToUpdate) { // This is a new game being created
                         gameStates.set(gameIdToUpdate, updatedGameState);
+                        
+                        resetInactivityTimer(gameIdToUpdate); // Activity: Game created
+
                         gameLogs.set(gameIdToUpdate, []);
                         logToGame(gameIdToUpdate, `Game created with ID: ${gameIdToUpdate}`);
                         broadcastGamesList();
@@ -535,6 +576,8 @@ wss.on('connection', ws => {
                     if (gameIdToSync && gameStates.has(gameIdToSync)) {
                         // Only the host (player 1) can force a sync
                         if (ws.playerId === 1) {
+                            resetInactivityTimer(gameIdToSync); // Activity: Force sync
+
                             logToGame(gameIdToSync, `Host (Player 1) forced a game state synchronization.`);
                             console.log(`Host forcing sync for game ${gameIdToSync}.`);
                             gameStates.set(gameIdToSync, hostGameState);
@@ -584,6 +627,7 @@ wss.on('connection', ws => {
                 }
                 case 'SET_GAME_MODE': {
                     if (gameState && !gameState.isGameStarted) {
+                        resetInactivityTimer(gameId); // Activity: Game settings change
                         gameState.gameMode = data.mode;
                         broadcastState(gameId, gameState);
                     }
@@ -591,6 +635,7 @@ wss.on('connection', ws => {
                 }
                 case 'SET_GAME_PRIVACY': {
                     if (gameState && !gameState.isGameStarted) {
+                        resetInactivityTimer(gameId); // Activity: Privacy change
                         gameState.isPrivate = data.isPrivate;
                         broadcastState(gameId, gameState);
                         broadcastGamesList(); // Update everyone's public list
@@ -599,6 +644,7 @@ wss.on('connection', ws => {
                 }
                  case 'ASSIGN_TEAMS': {
                     if (gameState && !gameState.isGameStarted) {
+                        resetInactivityTimer(gameId); // Activity: Team assignment
                         const { assignments } = data; // e.g., { 1: [1, 3], 2: [2, 4] }
                         const playerMap = new Map(gameState.players.map(p => [p.id, p]));
                         
@@ -623,6 +669,7 @@ wss.on('connection', ws => {
                 }
                 case 'START_READY_CHECK': {
                     if (gameState && !gameState.isGameStarted) {
+                        resetInactivityTimer(gameId); // Activity: Ready check start
                         // Reset all ready statuses
                         gameState.players.forEach(p => p.isReady = false);
                         gameState.isReadyCheckActive = true;
@@ -630,9 +677,20 @@ wss.on('connection', ws => {
                     }
                     break;
                 }
+                case 'CANCEL_READY_CHECK': {
+                    if (gameState && gameState.isReadyCheckActive && !gameState.isGameStarted) {
+                        resetInactivityTimer(gameId); // Activity: Ready check canceled
+                        gameState.isReadyCheckActive = false;
+                        // Reset ready statuses to keep state clean
+                        gameState.players.forEach(p => p.isReady = false);
+                        broadcastState(gameId, gameState);
+                    }
+                    break;
+                }
                 case 'PLAYER_READY': {
                     const { playerId } = data;
                     if (gameState && gameState.isReadyCheckActive && !gameState.isGameStarted) {
+                        resetInactivityTimer(gameId); // Activity: Player ready
                         const player = gameState.players.find(p => p.id === playerId);
                         if (player) {
                             player.isReady = true;
@@ -664,6 +722,7 @@ wss.on('connection', ws => {
                 case 'TRIGGER_HIGHLIGHT': {
                     const { highlightData } = data;
                     if (gameState) {
+                        resetInactivityTimer(gameId); // Activity: Highlight triggered
                         // Broadcast the highlight event to all clients in the game (including sender)
                         const highlightMessage = JSON.stringify({ type: 'HIGHLIGHT_TRIGGERED', highlightData });
                         wss.clients.forEach(client => {
@@ -728,6 +787,8 @@ process.stdin.on('data', (data) => {
         // 3. Clear any pending termination timers
         gameTerminationTimers.forEach(timerId => clearTimeout(timerId));
         gameTerminationTimers.clear();
+        gameInactivityTimers.forEach(timerId => clearTimeout(timerId));
+        gameInactivityTimers.clear();
 
         console.log('All game sessions cleared. The server is ready for new games.');
     }

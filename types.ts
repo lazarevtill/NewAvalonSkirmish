@@ -179,6 +179,7 @@ export interface DragItem {
   statusType?: string; // For counters: the type of status (e.g., 'Aim', 'Power+')
   count?: number; // For counters: how many are being dragged/applied
   bypassOwnershipCheck?: boolean; // If true, allows moving cards owned by others (e.g. Destroy effects)
+  isManual?: boolean; // True if the drag was initiated manually by the user (vs an ability effect)
 }
 
 /**
@@ -206,4 +207,45 @@ export interface CustomDeckCard {
 export interface CustomDeckFile {
   deckName: string;
   cards: CustomDeckCard[];
+}
+
+/**
+ * Defines the types of items that can appear in a context menu.
+ */
+export type ContextMenuItem =
+  // A standard clickable button item.
+  | { label: string; onClick: () => void; disabled?: boolean; isBold?: boolean }
+  // A visual separator line.
+  | { isDivider: true }
+  // A special control for incrementing/decrementing a status.
+  | {
+      type: 'statusControl';
+      label: string;
+      onAdd: () => void;
+      onRemove: () => void;
+      removeDisabled?: boolean;
+    };
+
+/**
+ * Defines the parameters required to open a context menu.
+ */
+export type ContextMenuParams = {
+  x: number;
+  y: number;
+  type: 'boardItem' | 'handCard' | 'discardCard' | 'deckPile' | 'discardPile' | 'token_panel_item' | 'deckCard' | 'announcedCard' | 'emptyBoardCell';
+  data: any; // Context-specific data (e.g. card, player, coordinates).
+}
+
+/**
+ * Represents the state of a cursor dragging or placing a stack of counters.
+ */
+export interface CursorStackState {
+    type: string; 
+    count: number; 
+    isDragging: boolean;
+    sourceCoords?: {row: number, col: number}; // Origin for ability tracking
+    targetOwnerId?: number; // Optional restriction for 'Revealed' token usage (Recon Drone) - Inclusive
+    excludeOwnerId?: number; // Optional restriction - Exclusive (e.g. Vigilant Spotter: Don't reveal self)
+    onlyOpponents?: boolean; // Optional restriction - Exclusive (Don't reveal self OR teammates)
+    onlyFaceDown?: boolean;  // Optional restriction - Only cards that are currently hidden (Face down or unrevealed hand)
 }

@@ -1,14 +1,15 @@
+
 /**
  * @file Renders a modal for creating and editing custom decks.
  */
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { CustomDeckFile, CustomDeckCard, Player, Card } from '../types';
+import type { CustomDeckFile, CustomDeckCard, Player, Card, ContextMenuItem } from '../types';
 import { DeckType } from '../types';
-import { getAllCards, getSelectableDecks, getCardDefinition, commandCardIds, deckFiles } from '../decks';
-// FIX: Corrected import path for CardDefinition type. It is exported from decks.ts.
+import { getAllCards, getSelectableDecks, getCardDefinition, commandCardIds } from '../decks';
 import type { CardDefinition } from '../decks';
 import { Card as CardComponent } from './Card';
 import { Tooltip, CardTooltipContent } from './Tooltip';
+import { ContextMenu } from './ContextMenu';
 
 interface DeckBuilderModalProps {
   isOpen: boolean;
@@ -20,11 +21,6 @@ const allCards = getAllCards();
 const selectableFactions = getSelectableDecks();
 const MAX_DECK_SIZE = 100;
 
-// Context Menu types and component, adapted from App.tsx for local use.
-type ContextMenuItem =
-  | { label: string; onClick: () => void; disabled?: boolean; isBold?: boolean }
-  | { isDivider: true };
-
 interface ContextMenuProps {
   x: number;
   y: number;
@@ -32,57 +28,8 @@ interface ContextMenuProps {
   onClose: () => void;
 }
 
-const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }) => {
-    const menuRef = useRef<HTMLDivElement>(null);
-    const [correctedPos, setCorrectedPos] = useState({ top: y, left: x });
-
-    useEffect(() => {
-        if (menuRef.current) {
-            const { innerWidth, innerHeight } = window;
-            const { offsetWidth, offsetHeight } = menuRef.current;
-            const correctedX = x + offsetWidth > innerWidth ? innerWidth - offsetWidth - 5 : x;
-            const correctedY = y + offsetHeight > innerHeight ? innerHeight - offsetHeight - 5 : y;
-            setCorrectedPos({ top: correctedY, left: correctedX });
-        }
-    }, [x, y, items]);
-
-    return (
-        <div
-            ref={menuRef}
-            className="fixed bg-gray-900 border border-gray-700 rounded-md shadow-lg z-[110] py-1"
-            style={{ top: correctedPos.top, left: correctedPos.left }}
-            onClick={(e) => e.stopPropagation()}
-        >
-            {items.map((item, index) => {
-                if ('isDivider' in item) {
-                    return <hr key={`divider-${index}`} className="border-gray-700 my-1" />;
-                }
-                return (
-                    <button
-                        key={index}
-                        onClick={() => {
-                            if (!item.disabled) {
-                                item.onClick();
-                                onClose();
-                            }
-                        }}
-                        disabled={item.disabled}
-                        className="block w-full text-left px-4 py-1 text-sm text-white hover:bg-indigo-600 disabled:text-gray-500 disabled:cursor-not-allowed disabled:bg-gray-800"
-                        style={{ fontWeight: item.isBold ? 'bold' : 'normal' }}
-                    >
-                        {item.label}
-                    </button>
-                );
-            })}
-        </div>
-    );
-};
-
-
 /**
  * Validates the content of a loaded deck file.
- * @param data The parsed JSON data from a file.
- * @returns An object with validation result.
  */
 const validateDeckData = (data: any): { isValid: true, deckFile: CustomDeckFile } | { isValid: false, error: string } => {
     if (typeof data.deckName !== 'string' || !Array.isArray(data.cards)) {
@@ -138,7 +85,6 @@ export const DeckBuilderModal: React.FC<DeckBuilderModalProps> = ({ isOpen, onCl
       if (cardDef && cardDef.faction && Object.values(DeckType).includes(cardDef.faction as DeckType)) {
           return cardDef.faction as DeckType;
       }
-      // Fallback for command cards or if faction missing (though should be there now)
       if (commandCardIds.has(cardId)) {
           return DeckType.Command;
       }
@@ -147,9 +93,6 @@ export const DeckBuilderModal: React.FC<DeckBuilderModalProps> = ({ isOpen, onCl
 
   const filteredLibraryCards = useMemo(() => {
     return allCards.filter(({ id, card }) => {
-      // Visibility Filter: Check if card is allowed in Deck Builder
-      // If allowedPanels is undefined, we assume it's visible for backward compatibility with older data, 
-      // but strictly we should check. Given the update, standard cards have "DECK_BUILDER".
       if (card.allowedPanels && !card.allowedPanels.includes('DECK_BUILDER')) {
           return false;
       }
@@ -159,11 +102,9 @@ export const DeckBuilderModal: React.FC<DeckBuilderModalProps> = ({ isOpen, onCl
           if (!commandCardIds.has(id)) return false;
       }
       else if (factionFilter !== 'all') {
-         // Use the explicit faction property if available, otherwise check deck lists
          if (card.faction) {
              if (card.faction !== factionFilter) return false;
          } else {
-             // Fallback to deck file check
             const cardDeckFile = selectableFactions.find(f => f.cards.some(c => c.cardId === id));
             if (!cardDeckFile || cardDeckFile.id !== factionFilter) {
               return false;

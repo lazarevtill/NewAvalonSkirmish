@@ -8,6 +8,7 @@ interface ReadyCheckModalProps {
   players: Player[];
   localPlayer: Player;
   onReady: () => void;
+  onCancel: () => void;
 }
 
 /**
@@ -16,7 +17,7 @@ interface ReadyCheckModalProps {
  * @param {ReadyCheckModalProps} props The properties for the component.
  * @returns {React.ReactElement} The rendered modal.
  */
-export const ReadyCheckModal: React.FC<ReadyCheckModalProps> = ({ players, localPlayer, onReady }) => {
+export const ReadyCheckModal: React.FC<ReadyCheckModalProps> = ({ players, localPlayer, onReady, onCancel }) => {
   const handleReadyClick = () => {
     if (!localPlayer.isReady) {
       onReady();
@@ -52,13 +53,22 @@ export const ReadyCheckModal: React.FC<ReadyCheckModalProps> = ({ players, local
           ))}
         </ul>
         
-        <button
-          onClick={handleReadyClick}
-          disabled={localPlayer.isReady}
-          className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors text-lg"
-        >
-          {localPlayer.isReady ? "Waiting for others..." : "I'm Ready"}
-        </button>
+        <div className="flex flex-col space-y-3">
+            <button
+              onClick={handleReadyClick}
+              disabled={localPlayer.isReady}
+              className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded disabled:bg-gray-500 disabled:cursor-not-allowed transition-colors text-lg"
+            >
+              {localPlayer.isReady ? "Waiting for others..." : "I'm Ready"}
+            </button>
+            
+            <button
+              onClick={onCancel}
+              className="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded transition-colors"
+            >
+              Cancel Start
+            </button>
+        </div>
       </div>
     </div>
   );

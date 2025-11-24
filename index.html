@@ -3,24 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- CSP Config: Explicitly allow 'unsafe-eval' in script-src for development tools -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' ws: wss: data: blob: https://*; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*; img-src 'self' data: https://*;">
     <title>New Avalon: Skirmish</title>
     <link rel="icon" type="image/png" href="https://res.cloudinary.com/dxxh6meej/image/upload/v1763368604/NA_icon_pqsc97.png" />
     <link rel="stylesheet" href="/index.css">
 <script type="importmap">
 {
   "imports": {
-    "path": "https://aistudiocdn.com/path@^0.12.7",
-    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
-    "vite": "https://aistudiocdn.com/vite@^7.2.2",
-    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.0",
-    "react/": "https://aistudiocdn.com/react@^19.2.0/",
     "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0",
     "ws": "https://aistudiocdn.com/ws@^8.18.3",
     "http": "https://aistudiocdn.com/http@^0.0.1-security",
     "fs": "https://aistudiocdn.com/fs@^0.0.1-security",
+    "path": "https://aistudiocdn.com/path@^0.12.7",
     "url": "https://aistudiocdn.com/url@^0.11.4",
-    "process": "https://aistudiocdn.com/process@^0.11.10",
-    "react-dom": "https://aistudiocdn.com/react-dom@^19.2.0"
+    "vite": "https://aistudiocdn.com/vite@^7.2.4",
+    "@vitejs/plugin-react": "https://aistudiocdn.com/@vitejs/plugin-react@^5.1.1"
   }
 }
 </script>

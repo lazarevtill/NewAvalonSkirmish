@@ -96,20 +96,14 @@ const GridCell: React.FC<{
       itemToDrop.card.isFaceDown = !!playMode.faceDown;
       handleDrop(itemToDrop, { target: 'board', boardCoords: { row, col } });
       setPlayMode(null);
-    } else if (cursorStack && cell.card) {
-        // Handle applying the cursor stack
-        handleDrop({
-            card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] }, // Dummy
-            source: 'counter_panel',
-            statusType: cursorStack.type,
-            count: cursorStack.count
-        }, { target: 'board', boardCoords: { row, col }});
-        // setCursorStack(null); // Removed here, handled globally via mouseup
-    } else if (cell.card && onCardClick) {
+    } 
+    // NOTE: Removed cursorStack handling here. We rely on the global mouseup handler in App.tsx
+    // to apply tokens. This ensures centralized validation logic (validateTarget) is respected.
+    else if (cell.card && onCardClick) {
         // Propagate general click for Auto-Abilities
         onCardClick(cell.card, { row, col });
     } else if (!cell.card && onEmptyCellClick) {
-        // Handle clicks on empty cells (e.g., for Move Self abilities)
+        // Handle clicks on empty cells (e.g. for Move Self abilities)
         onEmptyCellClick({ row, col });
     }
   };
@@ -141,7 +135,8 @@ const GridCell: React.FC<{
   
   const canDrop = !!draggedItem && (!isOccupied || (isOccupied && draggedItem.source === 'counter_panel'));
   const canPlay = isInPlayMode && !isOccupied;
-  const canStack = isStackMode && isOccupied;
+  // Changed canStack to strictly use isValidTarget during stack mode to prevent illegal highlights
+  const canStack = isStackMode && isValidTarget;
 
   // Unified Interaction Highlight (Saturated Cyan)
   // This applies to:
@@ -181,11 +176,13 @@ const GridCell: React.FC<{
 
       {cell.card && (
         <div
+          key={cell.card.id}
           draggable={isGameStarted}
           onDragStart={() => setDraggedItem({
               card: cell.card!,
               source: 'board',
               boardCoords: { row, col },
+              isManual: true, // Set manual flag for user interaction
           })}
           onDragEnd={() => setDraggedItem(null)}
           onContextMenu={(e) => openContextMenu(e, 'boardItem', { card: cell.card, boardCoords: { row, col }})}
@@ -195,7 +192,7 @@ const GridCell: React.FC<{
               if (!cursorStack) {
                   onCardDoubleClick(cell.card!, { row, col });
               } else {
-                  handleClick(); // Trigger the stack application
+                  handleClick(); // Trigger the stack application (via global handler)
               }
           }}
           className={`w-full h-full ${isGameStarted ? 'cursor-grab' : 'cursor-default'} relative`}

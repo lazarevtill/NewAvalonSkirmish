@@ -17,126 +17,15 @@ import { RevealRequestModal } from './components/RevealRequestModal';
 import { DeckBuilderModal } from './components/DeckBuilderModal';
 import { SettingsModal } from './components/SettingsModal';
 import { RulesModal } from './components/RulesModal';
+import { ContextMenu } from './components/ContextMenu';
 import { useGameState } from './hooks/useGameState';
-import type { Player, Card, DragItem, DropTarget, PlayerColor, CardStatus, CustomDeckFile, HighlightData, GameState } from './types';
+import type { Player, Card, DragItem, ContextMenuItem, ContextMenuParams, CursorStackState, CardStatus, HighlightData, PlayerColor } from './types';
 import { DeckType, GameMode } from './types';
 import { STATUS_ICONS, STATUS_DESCRIPTIONS } from './constants';
 import { getCardAbilityAction, canActivateAbility } from './utils/autoAbilities';
 import type { AbilityAction } from './utils/autoAbilities';
 import { decksData, countersDatabase } from './decks';
-
-/**
- * Defines the different types of items that can appear in a context menu.
- */
-type ContextMenuItem =
-  // A standard clickable button item.
-  | { label: string; onClick: () => void; disabled?: boolean; isBold?: boolean }
-  // A visual separator line.
-  | { isDivider: true }
-  // A special control for incrementing/decrementing a status.
-  | {
-      type: 'statusControl';
-      label: string;
-      onAdd: () => void;
-      onRemove: () => void;
-      removeDisabled?: boolean;
-    };
-
-/**
- * Props for the ContextMenu component.
- */
-interface ContextMenuProps {
-  x: number;
-  y: number;
-  items: ContextMenuItem[];
-  onClose: () => void;
-}
-
-/**
- * A generic context menu component that displays a list of actions at a specific screen position.
- * It automatically adjusts its position to stay within the viewport.
- * @param {ContextMenuProps} props The properties for the context menu.
- * @returns {React.ReactElement} The rendered context menu.
- */
-const ContextMenu: React.FC<ContextMenuProps> = ({ x, y, items, onClose }) => {
-    // Corrects the menu's position to prevent it from rendering off-screen.
-    const correctedX = x + 200 > window.innerWidth ? window.innerWidth - 210 : x;
-    const menuHeight = items.reduce((acc, item) => acc + ('isDivider' in item ? 9 : 32), 0);
-    const correctedY = y + menuHeight > window.innerHeight ? window.innerHeight - menuHeight - 10 : y;
-
-
-    return (
-        <div 
-            className="fixed bg-gray-900 border border-gray-700 rounded-md shadow-lg z-[100] py-1"
-            style={{ top: correctedY, left: correctedX }}
-            onClick={(e) => e.stopPropagation()} // Prevents the window click listener from closing the menu immediately.
-        >
-            {/* FIX: Used `if/else if/else` with unique property checks to ensure TypeScript correctly narrows the `item` union type in each branch. This resolves errors where properties were accessed on the wrong member of the union. */}
-            {items.map((item, index) => {
-                if ('isDivider' in item) {
-                    return <hr key={`divider-${index}`} className="border-gray-700 my-1" />;
-                } else if ('onClick' in item) { // This item is a standard button.
-                    return (
-                        <button
-                            key={index}
-                            onClick={() => {
-                                if (!item.disabled) {
-                                    item.onClick();
-                                    onClose();
-                                }
-                            }}
-                            disabled={item.disabled}
-                            className="block w-full text-left px-4 py-1 text-sm text-white hover:bg-indigo-600 disabled:text-gray-500 disabled:cursor-not-allowed disabled:bg-gray-800"
-                            style={{ fontWeight: item.isBold ? 'bold' : 'normal' }}
-                        >
-                            {item.label}
-                        </button>
-                    );
-                } else { // This item must be a statusControl.
-                    return (
-                        <div key={index} className="flex items-center justify-between px-4 py-1 text-sm text-white w-full space-x-2">
-                            <button
-                                onClick={(e) => { e.stopPropagation(); item.onRemove(); }}
-                                disabled={item.removeDisabled}
-                                className="w-7 h-6 flex items-center justify-center bg-gray-700 hover:bg-red-600 rounded disabled:bg-gray-800 disabled:text-gray-500 disabled:cursor-not-allowed font-mono text-lg"
-                            >
-                                -
-                            </button>
-                            <span className="flex-grow text-center">{item.label}</span>
-                             <button
-                                onClick={(e) => { e.stopPropagation(); item.onAdd(); }}
-                                className="w-7 h-6 flex items-center justify-center bg-gray-700 hover:bg-green-600 rounded font-mono text-lg"
-                            >
-                                +
-                            </button>
-                        </div>
-                    );
-                }
-            })}
-        </div>
-    );
-};
-
-/**
- * Defines the parameters required to open a context menu.
- */
-type ContextMenuParams = {
-  x: number;
-  y: number;
-  type: 'boardItem' | 'handCard' | 'discardCard' | 'deckPile' | 'discardPile' | 'token_panel_item' | 'deckCard' | 'announcedCard' | 'emptyBoardCell';
-  data: any; // Context-specific data (e.g. card, player, coordinates).
-}
-
-// Add sourceCoords to local cursorStack state to track ability origin
-interface CursorStackState {
-    type: string; 
-    count: number; 
-    isDragging: boolean;
-    sourceCoords?: {row: number, col: number}; // Origin for ability tracking
-    targetOwnerId?: number; // Optional restriction for 'Revealed' token usage (Recon Drone) - Inclusive
-    excludeOwnerId?: number; // Optional restriction - Exclusive (e.g. Vigilant Spotter: Don't reveal self)
-    onlyOpponents?: boolean; // Optional restriction - Exclusive (Don't reveal self OR teammates)
-}
+import { validateTarget, calculateValidTargets, checkActionHasTargets } from './utils/targeting';
 
 /**
  * The main application component. It manages the overall layout, modals,
@@ -151,6 +40,7 @@ export default function App() {
     createGame,
     joinGame,
     startReadyCheck,
+    cancelReadyCheck, 
     playerReady,
     assignTeams,
     setGameMode,
@@ -197,9 +87,9 @@ export default function App() {
     prevPhase,
     setPhase,
     markAbilityUsed,
-    // New actions
     swapCards,
     transferStatus,
+    transferAllCounters,
     recoverDiscardedCard,
     spawnToken,
     scoreLine
@@ -220,44 +110,42 @@ export default function App() {
   const [viewingCard, setViewingCard] = useState<{ card: Card; player?: Player } | null>(null);
   const [isListMode, setIsListMode] = useState(true);
   
-  // State for forcing image refreshes
-  const [imageRefreshVersion, setImageRefreshVersion] = useState<number>(Date.now());
+  const [imageRefreshVersion, setImageRefreshVersion] = useState<number>(() => {
+      try {
+          const stored = localStorage.getItem('image_refresh_data');
+          if (stored) {
+              const { version, timestamp } = JSON.parse(stored);
+              const twelveHours = 12 * 60 * 60 * 1000;
+              if (Date.now() - timestamp < twelveHours) {
+                  return version;
+              }
+          }
+      } catch (e) {
+          console.error("Error parsing image refresh data", e);
+      }
+      const newVersion = Date.now();
+      localStorage.setItem('image_refresh_data', JSON.stringify({ version: newVersion, timestamp: newVersion }));
+      return newVersion;
+  });
 
-  // State for the context menu.
   const [contextMenuProps, setContextMenuProps] = useState<ContextMenuParams | null>(null);
-  
-  // State for "Play Mode", where clicking a board cell plays the selected card.
   const [playMode, setPlayMode] = useState<{ card: Card; sourceItem: DragItem; faceDown?: boolean } | null>(null);
-  
-  // State for "Cursor Stack", where clicking the board applies counters.
-  // isDragging indicates if the user is currently holding the mouse down (Drag Mode) or if it's sticky (Click Mode)
   const [cursorStack, setCursorStack] = useState<CursorStackState | null>(null);
   const cursorFollowerRef = useRef<HTMLDivElement>(null);
   const lastClickPos = useRef<{x: number, y: number} | null>(null);
-  
-  // State for highlighting a row or column on the board.
   const [highlight, setHighlight] = useState<HighlightData | null>(null);
-  
-  // State for Auto-Abilities Feature
   const [isAutoAbilitiesEnabled, setIsAutoAbilitiesEnabled] = useState(false);
-  // Stores the current active ability state (e.g. "Select a target for IP Dept Agent")
   const [abilityMode, setAbilityMode] = useState<AbilityAction | null>(null);
-  
-  // New state to track which cells are valid targets for the current ability
   const [validTargets, setValidTargets] = useState<{row: number, col: number}[]>([]);
-  // New state to track valid targets in HAND
   const [validHandTargets, setValidHandTargets] = useState<{playerId: number, cardIndex: number}[]>([]);
-
-  // State for displaying "No Target" overlay on a specific board cell
   const [noTargetOverlay, setNoTargetOverlay] = useState<{row: number, col: number} | null>(null);
-
-  // Generic mouse position tracker for tooltips
   const mousePos = useRef({ x: 0, y: 0 });
-
-  // References and state for List Mode dynamic layout
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const boardContainerRef = useRef<HTMLDivElement>(null);
   const [leftPanelWidth, setLeftPanelWidth] = useState<number | undefined>(undefined);
+  
+  // Used to prevent click events from firing immediately after a token drop (mouseup)
+  const interactionLock = useRef(false);
 
   const activePlayerCount = useMemo(() => gameState.players.filter(p => !p.isDummy && !p.isDisconnected).length, [gameState.players]);
   const isSpectator = localPlayerId === null && gameState.gameId !== null;
@@ -273,15 +161,11 @@ export default function App() {
     return map;
   }, [gameState.players]);
 
-  // Calculate if we should disable active highlights (pulsing glow) on cards.
-  // This happens when we are in a targeting mode (ability active or dragging tokens).
-  // This suppresses visual noise so the user can focus on targets.
   const isTargetingMode = !!abilityMode || !!cursorStack;
 
   useEffect(() => {
       const checkListMode = () => {
           const savedMode = localStorage.getItem('ui_list_mode');
-          // Default to true if not set, otherwise parse 'true'/'false' string
           setIsListMode(savedMode === null ? true : savedMode === 'true');
       };
       checkListMode();
@@ -290,7 +174,6 @@ export default function App() {
       return () => window.removeEventListener('storage', checkListMode);
   }, []);
 
-  // List Mode Layout Calculation
   useLayoutEffect(() => {
       if (!isListMode) {
           setLeftPanelWidth(undefined);
@@ -301,12 +184,7 @@ export default function App() {
           if (boardContainerRef.current) {
               const windowWidth = window.innerWidth;
               const boardRect = boardContainerRef.current.getBoundingClientRect();
-              
-              // Safety check: if board hasn't sized yet, don't calculate
               if (boardRect.width === 0) return;
-
-              // Calculate precise width to ensure 10px gap
-              // Board is centered, so space to left is (Window - Board) / 2
               const centeredLeftSpace = (windowWidth - boardRect.width) / 2;
               const gap = 10;
               const targetWidth = centeredLeftSpace - gap;
@@ -318,11 +196,7 @@ export default function App() {
       const observer = new ResizeObserver(calculateWidth);
       if (boardContainerRef.current) observer.observe(boardContainerRef.current);
       window.addEventListener('resize', calculateWidth);
-
-      // Initial check
       calculateWidth();
-      
-      // Force a recalculation after a short delay to handle any layout shifts/animations
       const timer = setTimeout(calculateWidth, 100);
 
       return () => {
@@ -333,35 +207,27 @@ export default function App() {
   }, [isListMode, localPlayerId, gameState.activeGridSize]);
 
 
-  // Ensure cursor follower position is initialized immediately upon stack creation
   useLayoutEffect(() => {
       if (cursorStack && cursorFollowerRef.current && lastClickPos.current) {
-          // Shifted closer (-2px = 3px closer than +1px)
           cursorFollowerRef.current.style.left = `${lastClickPos.current.x - 2}px`;
           cursorFollowerRef.current.style.top = `${lastClickPos.current.y - 2}px`;
       }
   }, [cursorStack]);
 
-  // Mouse tracking for cursor stack / ability mode
   useEffect(() => {
       const handleMouseMove = (e: MouseEvent) => {
           mousePos.current = { x: e.clientX, y: e.clientY };
 
           if (cursorFollowerRef.current && (cursorStack || abilityMode)) {
-              // Shifted closer (-2px = 3px closer than +1px)
               cursorFollowerRef.current.style.left = `${e.clientX - 2}px`;
               cursorFollowerRef.current.style.top = `${e.clientY - 2}px`;
           }
       };
-      
       window.addEventListener('mousemove', handleMouseMove);
-      
-      // Initialize position if we entered mode without moving mouse yet
       if ((cursorStack || abilityMode) && cursorFollowerRef.current) {
            cursorFollowerRef.current.style.left = `${mousePos.current.x - 2}px`;
            cursorFollowerRef.current.style.top = `${mousePos.current.y - 2}px`;
       }
-
       return () => {
           window.removeEventListener('mousemove', handleMouseMove);
       };
@@ -372,10 +238,8 @@ export default function App() {
       const handleGlobalMouseUp = (e: MouseEvent) => {
           if (!cursorStack) return;
 
-          // Identify what we dropped onto using data attribute from GridCell or HandCard
           const target = document.elementFromPoint(e.clientX, e.clientY);
           
-          // 1. Check for Drop on HAND CARD
           const handCard = target?.closest('[data-hand-card]');
           if (handCard) {
               const attr = handCard.getAttribute('data-hand-card');
@@ -384,88 +248,65 @@ export default function App() {
                   const playerId = parseInt(playerIdStr, 10);
                   const cardIndex = parseInt(cardIndexStr, 10);
                   
-                  // Special logic for 'Revealed' token on Hand Cards
-                  if (cursorStack.type === 'Revealed') {
-                      // Check for specific target owner restriction (for Recon Drone) - INCLUSIVE
-                      if (cursorStack.targetOwnerId !== undefined && cursorStack.targetOwnerId !== playerId) {
-                           // Invalid target owner
-                           setCursorStack(null);
-                           return;
-                      }
-                      
-                      // Check for excluded owner restriction (for Vigilant Spotter) - EXCLUSIVE
-                      if (cursorStack.excludeOwnerId !== undefined && cursorStack.excludeOwnerId === playerId) {
-                           // Cannot target excluded owner (Self)
-                           setCursorStack(null);
-                           return;
-                      }
+                  const targetPlayer = gameState.players.find(p => p.id === playerId);
+                  const targetCard = targetPlayer?.hand[cardIndex];
 
-                      // Check for ONLY OPPONENTS restriction
-                      if (cursorStack.onlyOpponents) {
-                           const targetPlayer = gameState.players.find(p => p.id === playerId);
-                           const userPlayer = gameState.players.find(p => p.id === localPlayerId);
-                           if (targetPlayer && userPlayer) {
-                               if (targetPlayer.id === userPlayer.id) {
-                                   setCursorStack(null); // Self
-                                   return; 
+                  if (targetPlayer && targetCard) {
+                      const isValid = validateTarget(
+                          { card: targetCard, ownerId: playerId, location: 'hand' },
+                          cursorStack,
+                          localPlayerId,
+                          gameState.players
+                      );
+
+                      if (!isValid) return;
+                      
+                      if (cursorStack.type === 'Revealed' && playerId !== localPlayerId && !targetPlayer.isDummy) {
+                           if (localPlayerId !== null) {
+                               requestCardReveal({ 
+                                   source: 'hand', 
+                                   ownerId: playerId, 
+                                   cardIndex 
+                               }, localPlayerId);
+                               
+                               if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords);
+                               if (cursorStack.count > 1) {
+                                   setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                               } else {
+                                   setCursorStack(null);
                                }
-                               if (targetPlayer.teamId !== undefined && targetPlayer.teamId === userPlayer.teamId) {
-                                   setCursorStack(null); // Teammate
-                                   return;
-                               }
+                               // Set lock
+                               interactionLock.current = true;
+                               setTimeout(() => { interactionLock.current = false; }, 300);
                            }
+                           return; 
                       }
 
-                      if (playerId === localPlayerId) {
-                          // Reveal own card
-                          revealHandCard(playerId, cardIndex, 'all');
-                      } else {
-                          // Request reveal for opponent
-                          if (localPlayerId !== null) {
-                              requestCardReveal({ source: 'hand', ownerId: playerId, cardIndex }, localPlayerId);
-                          }
-                      }
-                      
-                      // Track ability usage if applicable
-                      if (cursorStack.sourceCoords) {
-                          markAbilityUsed(cursorStack.sourceCoords);
-                      }
+                       handleDrop({
+                          card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                          source: 'counter_panel',
+                          statusType: cursorStack.type,
+                          count: 1 
+                       }, { target: 'hand', playerId, cardIndex, boardCoords: undefined }); 
+                       
+                       if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords);
 
-                      // Decrease stack count
-                      if (cursorStack.count > 1) {
-                          setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
-                      } else {
-                          setCursorStack(null);
-                      }
+                       if (cursorStack.count > 1) {
+                           setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                       } else {
+                           setCursorStack(null);
+                       }
+                       
+                       // Set lock
+                       interactionLock.current = true;
+                       setTimeout(() => { interactionLock.current = false; }, 300);
                       return;
                   }
-
-                   // Generic Counter application to hand cards (e.g. Power+/-)
-                   handleDrop({
-                      card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
-                      source: 'counter_panel',
-                      statusType: cursorStack.type,
-                      count: 1 // Apply 1 at a time from stack
-                   }, { target: 'hand', playerId, cardIndex, boardCoords: undefined }); // DropTarget enhanced with cardIndex support
-                   
-                   // Track ability usage if applicable
-                   if (cursorStack.sourceCoords) {
-                       markAbilityUsed(cursorStack.sourceCoords);
-                   }
-
-                   if (cursorStack.count > 1) {
-                       setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
-                   } else {
-                       setCursorStack(null);
-                   }
-                  return;
               }
           }
 
-          // 2. Check for Drop on BOARD CELL
           const boardCell = target?.closest('[data-board-coords]');
           if (boardCell) {
-              // Target is a board cell - Apply the token
               const coords = boardCell.getAttribute('data-board-coords');
               if (coords) {
                   const [rowStr, colStr] = coords.split(',');
@@ -473,89 +314,70 @@ export default function App() {
                   const col = parseInt(colStr, 10);
                   
                   const targetCard = gameState.board[row][col].card;
+                  
+                  if (targetCard && targetCard.ownerId !== undefined) {
+                      const isValid = validateTarget(
+                          { card: targetCard, ownerId: targetCard.ownerId, location: 'board' },
+                          cursorStack,
+                          localPlayerId,
+                          gameState.players
+                      );
 
-                  // Special logic for Revealed Token on Face Down Opponent Card
-                  if (targetCard && cursorStack.type === 'Revealed' && targetCard.ownerId !== localPlayerId && localPlayerId !== null) {
-                       // Check restriction - INCLUSIVE
-                       if (cursorStack.targetOwnerId !== undefined && cursorStack.targetOwnerId !== targetCard.ownerId) {
-                            setCursorStack(null);
-                            return;
-                       }
-                       // Check restriction - EXCLUSIVE (Self)
-                       if (cursorStack.excludeOwnerId !== undefined && cursorStack.excludeOwnerId === targetCard.ownerId) {
-                            setCursorStack(null);
-                            return;
-                       }
-                       
-                       // Check restriction - ONLY OPPONENTS (Teammates)
-                       if (cursorStack.onlyOpponents) {
-                           const targetPlayer = gameState.players.find(p => p.id === targetCard.ownerId);
-                           const userPlayer = gameState.players.find(p => p.id === localPlayerId);
-                           if (targetPlayer && userPlayer) {
-                               if (targetPlayer.teamId !== undefined && targetPlayer.teamId === userPlayer.teamId) {
-                                   setCursorStack(null); // Teammate
-                                   return;
+                      if (!isValid) return;
+
+                      const targetPlayer = gameState.players.find(p => p.id === targetCard.ownerId);
+                      if (cursorStack.type === 'Revealed' && targetCard.ownerId !== localPlayerId && !targetPlayer?.isDummy) {
+                           if (localPlayerId !== null) {
+                               requestCardReveal({ 
+                                   source: 'board', 
+                                   ownerId: targetCard.ownerId, 
+                                   boardCoords: { row, col } 
+                               }, localPlayerId);
+
+                               if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords);
+                               if (cursorStack.count > 1) {
+                                   setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                               } else {
+                                   setCursorStack(null);
                                }
+                               // Set lock
+                               interactionLock.current = true;
+                               setTimeout(() => { interactionLock.current = false; }, 300);
                            }
-                       }
-
-                       // CRITICAL CHANGE: Must be FACE DOWN to apply a revealed token via ability
-                       if (!targetCard.isFaceDown) {
-                           setCursorStack(null); // Cannot reveal what is already visible
                            return;
-                       }
-
-                       requestCardReveal({ source: 'board', ownerId: targetCard.ownerId!, boardCoords: { row, col } }, localPlayerId);
-                       
-                       // Track ability usage if applicable
-                       if (cursorStack.sourceCoords) {
-                           markAbilityUsed(cursorStack.sourceCoords);
-                       }
-                       
-                       if (cursorStack.count > 1) {
-                           setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
-                       } else {
-                           setCursorStack(null);
-                       }
-                       return;
+                      }
                   }
 
-                  // Standard Token/Counter application
-                  handleDrop({
-                      card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
-                      source: 'counter_panel',
-                      statusType: cursorStack.type,
-                      count: 1
-                  }, { target: 'board', boardCoords: { row, col }});
-                  
-                   // Track ability usage if applicable
-                   if (cursorStack.sourceCoords) {
-                       markAbilityUsed(cursorStack.sourceCoords);
-                   }
+                  if (targetCard) {
+                      handleDrop({
+                          card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                          source: 'counter_panel',
+                          statusType: cursorStack.type,
+                          count: 1
+                      }, { target: 'board', boardCoords: { row, col }});
+                      
+                       if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords);
 
-                  if (cursorStack.count > 1) {
-                      setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
-                  } else {
-                      setCursorStack(null);
+                      if (cursorStack.count > 1) {
+                          setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                      } else {
+                          setCursorStack(null);
+                      }
+                      
+                      // Set lock to prevent click event from firing on the card underneath
+                      interactionLock.current = true;
+                      setTimeout(() => { interactionLock.current = false; }, 300);
                   }
               }
           } else {
-              // Target is NOT a board cell or hand card
-              
               const isOverModal = target?.closest('.counter-modal-content');
-              
               if (cursorStack.isDragging) {
                   if (isOverModal) {
-                      // If dragging and released over the modal (source), switch to "Stick" mode (isDragging = false)
                       setCursorStack(prev => prev ? { ...prev, isDragging: false } : null);
                   } else {
-                      // Released in empty space (not board, not modal) -> Cancel
                       setCursorStack(null);
                   }
               } else {
-                   // "Stick" mode (isDragging = false) - Clicked somewhere
-                   // If clicked on empty space (not board), cancel.
-                   // If clicked on modal, do nothing (maybe selecting another).
                    if (!isOverModal) {
                        setCursorStack(null);
                    }
@@ -569,7 +391,18 @@ export default function App() {
       };
   }, [cursorStack, handleDrop, gameState, localPlayerId, revealHandCard, requestCardReveal, markAbilityUsed]);
 
-  // Spacebar to advance Phase
+  // New effect: Swallow clicks when interaction lock is active (Capture Phase)
+  useEffect(() => {
+      const handleGlobalClickCapture = (e: MouseEvent) => {
+          if (interactionLock.current) {
+              e.stopPropagation();
+              e.preventDefault();
+          }
+      };
+      window.addEventListener('click', handleGlobalClickCapture, true);
+      return () => window.removeEventListener('click', handleGlobalClickCapture, true);
+  }, []);
+
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
           if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) {
@@ -581,207 +414,67 @@ export default function App() {
                   nextPhase();
               }
           }
+          if (e.key === 'Escape') {
+              if (abilityMode && abilityMode.sourceCoords && abilityMode.sourceCoords.row >= 0) {
+                  markAbilityUsed(abilityMode.sourceCoords);
+              }
+              if (cursorStack && cursorStack.sourceCoords) {
+                  markAbilityUsed(cursorStack.sourceCoords);
+              }
+
+              setCursorStack(null);
+              setPlayMode(null);
+              setAbilityMode(null);
+              setViewingDiscard(null); 
+          }
       };
+      
+      const handleRightClick = (e: MouseEvent) => {
+          if (cursorStack || playMode || abilityMode) {
+              e.preventDefault();
+              if (abilityMode && abilityMode.sourceCoords && abilityMode.sourceCoords.row >= 0) {
+                  markAbilityUsed(abilityMode.sourceCoords);
+              }
+              if (cursorStack && cursorStack.sourceCoords) {
+                  markAbilityUsed(cursorStack.sourceCoords);
+              }
+
+              setCursorStack(null);
+              setPlayMode(null);
+              setAbilityMode(null);
+              setViewingDiscard(null);
+          }
+      };
+
       window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('contextmenu', handleRightClick); 
+      
       return () => {
           window.removeEventListener('keydown', handleKeyDown);
-      };
-  }, [nextPhase, gameState.isGameStarted]);
-  
-  // Helper to calculate valid targets, extracted for re-use
-  const calculateValidTargets = (action: AbilityAction | null, currentGameState: GameState, playerId: number | null) => {
-      if (!action || (action.type !== 'ENTER_MODE' && action.type !== 'CREATE_STACK')) {
-          return [];
+          window.removeEventListener('contextmenu', handleRightClick);
       }
-
-      const targets: {row: number, col: number}[] = [];
-      const board = currentGameState.board;
-      const gridSize = board.length;
-      
-      // If action is CREATE_STACK (e.g. Recon Drone reveal), no board targets usually unless specified
-      if (action.type === 'CREATE_STACK') return [];
-      
-      const { mode, payload, sourceCoords } = action;
-
-      // 1. Generic TARGET selection (e.g. Stun, Exploit, Destroy)
-      if (mode === 'SELECT_TARGET' && payload.filter) {
-           for(let r=0; r<gridSize; r++) {
-               for(let c=0; c<gridSize; c++) {
-                   const cell = board[r][c];
-                   if (cell.card && payload.filter(cell.card, r, c)) {
-                       targets.push({row: r, col: c});
-                   }
-               }
-           }
-      }
-      // 2. Patrol Move (Empty cell in same row/col)
-      else if (mode === 'PATROL_MOVE' && sourceCoords) {
-          for(let r=0; r<gridSize; r++) {
-              for(let c=0; c<gridSize; c++) {
-                  // Must be same row OR same col
-                  const isLine = (r === sourceCoords.row || c === sourceCoords.col);
-                  const isSame = (r === sourceCoords.row && c === sourceCoords.col);
-                  const isEmpty = !board[r][c].card;
-                  
-                  // Allow moving to empty cell OR cancelling by clicking same cell
-                  if (isLine && (isEmpty || isSame)) {
-                      targets.push({row: r, col: c});
-                  }
-              }
-          }
-      }
-      // 3. Riot Push (Adjacent opponent who can be pushed into empty space)
-      else if (mode === 'RIOT_PUSH' && sourceCoords) {
-          const neighbors = [
-              {r: sourceCoords.row - 1, c: sourceCoords.col},
-              {r: sourceCoords.row + 1, c: sourceCoords.col},
-              {r: sourceCoords.row, c: sourceCoords.col - 1},
-              {r: sourceCoords.row, c: sourceCoords.col + 1},
-          ];
-          
-          neighbors.forEach(nb => {
-              // Check bounds
-              if (nb.r >= 0 && nb.r < gridSize && nb.c >= 0 && nb.c < gridSize) {
-                   const targetCard = board[nb.r][nb.c].card;
-                   
-                   // Use playerId passed to function
-                   // Allow pushing stunned cards (opponents can move them)
-                   if (targetCard && targetCard.ownerId !== playerId) {
-                       // Calculate push destination
-                       const dRow = nb.r - sourceCoords.row;
-                       const dCol = nb.c - sourceCoords.col;
-                       const pushRow = nb.r + dRow;
-                       const pushCol = nb.c + dCol;
-                       
-                       // Check dest bounds and emptiness
-                       if (pushRow >= 0 && pushRow < gridSize && pushCol >= 0 && pushCol < gridSize) {
-                           if (!board[pushRow][pushCol].card) {
-                               targets.push({row: nb.r, col: nb.c});
-                           }
-                       }
-                   }
-              }
-          });
-      }
-      // 4. Riot Move (Specifically the vacated cell)
-      else if (mode === 'RIOT_MOVE' && payload.vacatedCoords) {
-          targets.push(payload.vacatedCoords);
-          // Also highlight self to indicate "stay" option
-          if(sourceCoords) targets.push(sourceCoords);
-      }
-      // 5. Swap Positions (Reckless Provocateur)
-      else if (mode === 'SWAP_POSITIONS' && payload.filter) {
-          for(let r=0; r<gridSize; r++) {
-               for(let c=0; c<gridSize; c++) {
-                   const cell = board[r][c];
-                   if (cell.card && payload.filter(cell.card, r, c)) {
-                       targets.push({row: r, col: c});
-                   }
-               }
-           }
-      }
-      // 6. Transfer Status (Reckless Provocateur Commit)
-      else if (mode === 'TRANSFER_STATUS_SELECT' && payload.filter) {
-          for(let r=0; r<gridSize; r++) {
-               for(let c=0; c<gridSize; c++) {
-                   const cell = board[r][c];
-                   if (cell.card && payload.filter(cell.card, r, c)) {
-                       targets.push({row: r, col: c});
-                   }
-               }
-           }
-      }
-      // 7. Spawn Token / Select Cell
-      else if ((mode === 'SPAWN_TOKEN' || mode === 'SELECT_CELL') && sourceCoords) {
-           for(let r=0; r<gridSize; r++) {
-               for(let c=0; c<gridSize; c++) {
-                   const isEmpty = !board[r][c].card;
-                   const isAdj = Math.abs(r - sourceCoords.row) + Math.abs(c - sourceCoords.col) === 1;
-                   const isSame = r === sourceCoords.row && c === sourceCoords.col;
-                   
-                   // For Inventive Maker Spawn (Adj)
-                   if (mode === 'SPAWN_TOKEN' && isEmpty && isAdj) {
-                        targets.push({row: r, col: c});
-                   }
-                   // For Generic Select Cell (e.g. Recon Drone move)
-                   // Payload allowSelf controls "Stay"
-                   if (mode === 'SELECT_CELL') {
-                       if (isEmpty) targets.push({row: r, col: c});
-                       if (payload.allowSelf && isSame) targets.push({row: r, col: c});
-                   }
-               }
-           }
-      }
-      // 8. Reveal Enemy (Recon Drone)
-      else if (mode === 'REVEAL_ENEMY' && payload.filter) {
-          for(let r=0; r<gridSize; r++) {
-               for(let c=0; c<gridSize; c++) {
-                   const cell = board[r][c];
-                   if (cell.card && payload.filter(cell.card, r, c)) {
-                       targets.push({row: r, col: c});
-                   }
-               }
-           }
-      }
-      // 9. Select Line (Mobilization)
-      else if (mode === 'SELECT_LINE_START') {
-           // Any cell
-           for(let r=0; r<gridSize; r++) {
-               for(let c=0; c<gridSize; c++) {
-                   targets.push({row: r, col: c});
-               }
-           }
-      }
-      else if (mode === 'SELECT_LINE_END' && payload.firstCoords) {
-          // Any cell in same row/col as first
-           for(let r=0; r<gridSize; r++) {
-               for(let c=0; c<gridSize; c++) {
-                   const isRow = r === payload.firstCoords.row;
-                   const isCol = c === payload.firstCoords.col;
-                   if (isRow || isCol) {
-                       targets.push({row: r, col: c});
-                   }
-               }
-           }
-      }
-      
-      return targets;
-  };
-
-  // Helper to check if an ability action has ANY valid targets (Board, Hand, Deck, Discard)
-  const checkActionHasTargets = (action: AbilityAction, currentGameState: GameState, playerId: number | null): boolean => {
-       // If modal open, valid.
-       if (action.type === 'OPEN_MODAL') return true;
-       if (action.type === 'CREATE_STACK') return true; // Always valid to create stack
-
-       // 1. Check Board Targets
-       const boardTargets = calculateValidTargets(action, currentGameState, playerId);
-       if (boardTargets.length > 0) return true;
-
-       // 2. Check Hand Targets (For 'DESTROY' actions targeting Revealed cards)
-       if (action.mode === 'SELECT_TARGET' && action.payload?.filter) {
-           // Iterate all players hands
-           for (const p of currentGameState.players) {
-               if (p.hand.some((card) => action.payload.filter!(card))) {
-                   return true;
-               }
-           }
-       }
-       
-       return false;
-  };
+  }, [cursorStack, playMode, abilityMode, markAbilityUsed, gameState.isGameStarted, nextPhase]);
 
   // Calculate valid targets (Board AND Hand) when abilityMode changes or cursor stack changes
   useEffect(() => {
-      // 1. Calculate Board Targets
-      const boardTargets = calculateValidTargets(abilityMode, gameState, localPlayerId);
+      let effectiveAction: AbilityAction | null = abilityMode;
+      if (cursorStack && !abilityMode) {
+          effectiveAction = {
+              type: 'CREATE_STACK',
+              tokenType: cursorStack.type,
+              count: cursorStack.count,
+              onlyFaceDown: cursorStack.onlyFaceDown,
+              onlyOpponents: cursorStack.onlyOpponents,
+              targetOwnerId: cursorStack.targetOwnerId,
+              excludeOwnerId: cursorStack.excludeOwnerId
+          };
+      }
+
+      const boardTargets = calculateValidTargets(effectiveAction, gameState, localPlayerId);
       
-      // 2. Calculate Hand Targets
       const handTargets: {playerId: number, cardIndex: number}[] = [];
       
-      // Scenario A: Ability Mode Active
       if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_TARGET') {
-          // If the ability has a filter (e.g. Destroy revealed card), check all hands
           if (abilityMode.payload.filter) {
               gameState.players.forEach(p => {
                   p.hand.forEach((card, index) => {
@@ -792,30 +485,20 @@ export default function App() {
               });
           }
       } 
-      // Scenario B: Cursor Stack Active (Dragging Token)
       else if (cursorStack) {
-          // Check if this token type can be applied to hand
           const counterDef = countersDatabase[cursorStack.type];
           if (counterDef && counterDef.allowedTargets && counterDef.allowedTargets.includes('hand')) {
-               // Add all hand cards as valid targets
                gameState.players.forEach(p => {
                    p.hand.forEach((card, index) => {
-                       // Special restriction for Recon Drone Reveal (Inclusive)
-                       if (cursorStack.type === 'Revealed' && cursorStack.targetOwnerId !== undefined) {
-                           if (p.id !== cursorStack.targetOwnerId) return;
+                       const isValid = validateTarget(
+                           { card, ownerId: p.id, location: 'hand' },
+                           cursorStack,
+                           localPlayerId,
+                           gameState.players
+                       );
+                       if (isValid) {
+                           handTargets.push({ playerId: p.id, cardIndex: index });
                        }
-                       // Special restriction for Vigilant Spotter Reveal (Exclusive)
-                       if (cursorStack.type === 'Revealed' && cursorStack.excludeOwnerId !== undefined) {
-                           if (p.id === cursorStack.excludeOwnerId) return;
-                       }
-                       // Special restriction for ONLY OPPONENTS
-                       if (cursorStack.type === 'Revealed' && cursorStack.onlyOpponents) {
-                           const userPlayer = gameState.players.find(pl => pl.id === localPlayerId);
-                           if (p.id === localPlayerId) return; // Self
-                           if (userPlayer && p.teamId !== undefined && p.teamId === userPlayer.teamId) return; // Teammate
-                       }
-
-                       handTargets.push({ playerId: p.id, cardIndex: index });
                    });
                });
           }
@@ -825,38 +508,6 @@ export default function App() {
       setValidHandTargets(handTargets);
   }, [abilityMode, cursorStack, gameState.board, gameState.players, localPlayerId]);
 
-  // Clear cursor stack/ability mode on right click or escape
-  useEffect(() => {
-      const handleKeyDown = (e: KeyboardEvent) => {
-          if (e.key === 'Escape') {
-              setCursorStack(null);
-              setPlayMode(null);
-              setAbilityMode(null);
-              setViewingDiscard(null); // Close modal if open via ability
-          }
-      };
-      
-      const handleRightClick = (e: MouseEvent) => {
-          // Only handle global right clicks if we have an active mode
-          if (cursorStack || playMode || abilityMode) {
-              e.preventDefault();
-              setCursorStack(null);
-              setPlayMode(null);
-              setAbilityMode(null);
-              setViewingDiscard(null); // Close modal if open via ability
-          }
-      };
-
-      window.addEventListener('keydown', handleKeyDown);
-      window.addEventListener('contextmenu', handleRightClick); // Use 'contextmenu' event for Right Click
-      
-      return () => {
-          window.removeEventListener('keydown', handleKeyDown);
-          window.removeEventListener('contextmenu', handleRightClick);
-      }
-  }, [cursorStack, playMode, abilityMode]);
-
-  // Effect to handle incoming highlights from the server
   useEffect(() => {
       if (latestHighlight) {
           setHighlight(latestHighlight);
@@ -866,9 +517,6 @@ export default function App() {
   }, [latestHighlight]);
 
 
-  /**
-   * Closes all currently open modals.
-   */
   const closeAllModals = () => {
       setTokensModalOpen(false);
       setCountersModalOpen(false);
@@ -910,17 +558,16 @@ export default function App() {
 
   const handleSaveSettings = (url: string) => {
     localStorage.setItem('custom_ws_url', url.trim());
-    
-    // Also re-check list mode
     const savedMode = localStorage.getItem('ui_list_mode');
     setIsListMode(savedMode === null ? true : savedMode === 'true');
-    
     setSettingsModalOpen(false);
     forceReconnect();
   };
   
   const handleSyncAndRefresh = () => {
-      setImageRefreshVersion(Date.now());
+      const newVersion = Date.now();
+      setImageRefreshVersion(newVersion);
+      localStorage.setItem('image_refresh_data', JSON.stringify({ version: newVersion, timestamp: newVersion }));
       syncGame();
   };
 
@@ -932,9 +579,10 @@ export default function App() {
       });
   };
 
-  // --- Auto-Abilities & Interactive Mode Handlers ---
-
   const activateAbility = (card: Card, boardCoords: { row: number, col: number }) => {
+      // Guard: Prevent triggering if already in a mode
+      if (abilityMode || cursorStack) return;
+
       if (!isAutoAbilitiesEnabled || !gameState.isGameStarted || localPlayerId === null) return;
       
       if (localPlayerId !== gameState.activeTurnPlayerId || card.ownerId !== localPlayerId) return;
@@ -952,34 +600,26 @@ export default function App() {
                   isDragging: false, 
                   sourceCoords: boardCoords,
                   excludeOwnerId: action.excludeOwnerId,
-                  onlyOpponents: action.onlyOpponents
+                  onlyOpponents: action.onlyOpponents,
+                  onlyFaceDown: action.onlyFaceDown
               });
           } else if (action.type === 'ENTER_MODE') {
-              // Check if there are valid targets ANYWHERE before entering mode
               const hasTargets = checkActionHasTargets(action, gameState, localPlayerId);
               
               if (!hasTargets) {
-                  // Only show overlay if coords are valid (on board)
                   if (boardCoords.row >= 0) {
                       setNoTargetOverlay(boardCoords);
                       markAbilityUsed(boardCoords); 
                       setTimeout(() => setNoTargetOverlay(null), 750);
-                  } else {
-                      // Off-board (Command card) failed target check.
-                      // Don't mark used if it failed? Or mark used anyway?
-                      // Usually if a command card fails to find targets, it shouldn't be played.
-                      // Just return.
                   }
                   return;
               }
               setAbilityMode(action);
           } else if (action.type === 'OPEN_MODAL') {
-              // Handle Modal Ops (e.g. Inventive Maker Discard)
               if (action.mode === 'RETRIEVE_DEVICE') {
                    const player = gameState.players.find(p => p.id === localPlayerId);
                    if (player) {
                        setViewingDiscard({ player, pickMode: true });
-                       // Mark ability used if on board
                        if (boardCoords.row >= 0) markAbilityUsed(boardCoords);
                    }
               }
@@ -988,25 +628,24 @@ export default function App() {
   };
 
   const handleBoardCardClick = (card: Card, boardCoords: { row: number, col: number }) => {
-      // Priority 1: Play Mode (Playing a card from hand)
-      if (playMode) return; // Handled by GridCell internally via handleDrop
+      if (playMode) return;
+      if (cursorStack) return; 
+      if (interactionLock.current) return;
 
-      // Priority 2: Cursor Stack (Dropping a token/counter)
-      if (cursorStack) return; // Handled by handleGlobalMouseUp/GridCell
-
-      // Priority 3: Interactive Ability Mode (Resolving an active ability)
+      // If we are already in an ability mode (targeting), handle the interaction here
+      // and DO NOT proceed to activateAbility.
       if (abilityMode && abilityMode.type === 'ENTER_MODE') {
+          // Explicitly block interaction with the source card if clicked to prevent re-activation
+          if (abilityMode.sourceCard && abilityMode.sourceCard.id === card.id) {
+               return;
+          }
+
           const { mode, payload, sourceCard, sourceCoords } = abilityMode;
 
-          // Check if clicked card is a valid target
-          // We re-run the specific logic check to be safe, essentially validating the click
-          
-          // --- A: DESTROY_TARGET (Tactical Agent, IP Dept Agent, Cautious Avenger) ---
           if (mode === 'SELECT_TARGET' && payload.actionType === 'DESTROY') {
               if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) {
                   return;
               }
-              // Destroy effects can bypass ownership checks
               moveItem({ 
                   card, 
                   source: 'board', 
@@ -1015,11 +654,10 @@ export default function App() {
               }, { target: 'discard', playerId: card.ownerId });
               
               if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords);
-              setAbilityMode(null); 
+              setTimeout(() => setAbilityMode(null), 100);
               return;
           }
 
-          // --- B: SELECT_TARGET (IP Dept, Tactical, Patrol, Riot, Cautious Avenger - Stun/Exploit/Aim) ---
           if (mode === 'SELECT_TARGET' && payload.tokenType) {
               if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) {
                   return; 
@@ -1028,20 +666,17 @@ export default function App() {
                   card: { id: 'dummy', deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
                   source: 'counter_panel',
                   statusType: payload.tokenType,
-                  count: payload.count || 1 // UPDATED: Use payload.count if available
+                  count: payload.count || 1 
               }, { target: 'board', boardCoords });
               
               if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords);
-              setAbilityMode(null);
+              setTimeout(() => setAbilityMode(null), 100);
               return;
           }
 
-          // --- C: RIOT_PUSH (Riot Agent) ---
           if (mode === 'RIOT_PUSH' && sourceCoords && sourceCoords.row >= 0) {
               const isAdj = Math.abs(boardCoords.row - sourceCoords.row) + Math.abs(boardCoords.col - sourceCoords.col) === 1;
               if (!isAdj || card.ownerId === localPlayerId) return;
-
-              // Check if target is stunned - REMOVED check, opponents can move stunned cards.
 
               const dRow = boardCoords.row - sourceCoords.row;
               const dCol = boardCoords.col - sourceCoords.col;
@@ -1052,7 +687,6 @@ export default function App() {
               if (targetRow < 0 || targetRow >= gridSize || targetCol < 0 || targetCol >= gridSize) return;
               if (gameState.board[targetRow][targetCol].card !== null) return;
 
-              // Pushing bypasses ownership
               moveItem({ 
                   card, 
                   source: 'board', 
@@ -1072,75 +706,86 @@ export default function App() {
               return;
           }
 
-           // --- D: RIOT_MOVE (Riot Agent Step 2) - Clicking Self ---
            if (mode === 'RIOT_MOVE' && sourceCoords && sourceCoords.row >= 0) {
                if (boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
                    markAbilityUsed(sourceCoords);
-                   setAbilityMode(null); // Cancel/Stay
+                   setTimeout(() => setAbilityMode(null), 100); 
                }
                return;
            }
 
-           // --- E: SWAP_POSITIONS (Reckless Provocateur) ---
            if (mode === 'SWAP_POSITIONS' && sourceCoords && sourceCoords.row >= 0) {
+               // Check if sourceCard is clicked to avoid self-swap / re-activation
+               if (sourceCard && sourceCard.id === card.id) return;
+
                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
                
                swapCards(sourceCoords, boardCoords);
-               // CHANGE: Mark the destination, because that's where the unit is now.
-               // sourceCoords is where it was, boardCoords is where it is going.
                markAbilityUsed(boardCoords);
-               setAbilityMode(null);
+               setTimeout(() => setAbilityMode(null), 100);
                return;
            }
 
-           // --- F: TRANSFER_STATUS_SELECT (Reckless Provocateur Commit) ---
            if (mode === 'TRANSFER_STATUS_SELECT' && sourceCoords && sourceCoords.row >= 0) {
+               if (sourceCard && sourceCard.id === card.id) return;
                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
 
-               // FIX: Simplified to just steal the first status instead of trying to open a broken context menu
                if (card.statuses && card.statuses.length > 0) {
                    transferStatus(boardCoords, sourceCoords, card.statuses[0].type);
                    markAbilityUsed(sourceCoords);
-                   setAbilityMode(null);
+                   setTimeout(() => setAbilityMode(null), 100);
                }
                return;
            }
+
+           if (mode === 'TRANSFER_ALL_STATUSES' && sourceCoords && sourceCoords.row >= 0) {
+               if (sourceCard && sourceCard.id === card.id) return;
+               if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
+
+               transferAllCounters(boardCoords, sourceCoords);
+               markAbilityUsed(sourceCoords);
+               setTimeout(() => setAbilityMode(null), 100);
+               return;
+           }
            
-           // --- G: REVEAL_ENEMY (Recon Drone) ---
            if (mode === 'REVEAL_ENEMY') {
+               if (sourceCard && sourceCard.id === card.id) return;
                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
                
-               // Found target card owner. Restrict cursor to that owner.
                setCursorStack({ 
                    type: 'Revealed', 
                    count: 1, 
                    isDragging: false, 
-                   sourceCoords: sourceCoords, // To track usage
-                   targetOwnerId: card.ownerId 
+                   sourceCoords: sourceCoords, 
+                   targetOwnerId: card.ownerId, 
+                   onlyFaceDown: true, 
+                   onlyOpponents: true 
                });
-               setAbilityMode(null);
+               setTimeout(() => setAbilityMode(null), 100);
                return;
            }
            
+           // Catch-all: If in ability mode but clicked something else, simply do nothing (don't trigger new ability)
            return;
       }
 
-      // Priority 4: Activate Ability (Clicking the source card to start)
-      activateAbility(card, boardCoords);
+      // Only if NO ability mode is active, proceed to activate ability
+      if (!abilityMode && !cursorStack) {
+          activateAbility(card, boardCoords);
+      }
   };
   
-  // Handler for clicking cards in hand during Ability Mode (e.g. for IP Dept Agent Destroy)
   const handleHandCardClick = (player: Player, card: Card, cardIndex: number) => {
+      if (interactionLock.current) return;
+
       if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_TARGET') {
           const { payload, sourceCoords } = abilityMode;
           
           if (payload.actionType === 'DESTROY') {
-             // Check filter if present
              if (payload.filter && !payload.filter(card)) {
                   return;
              }
              
-             // Execute Destroy (Move to Discard)
              moveItem({
                  card,
                  source: 'hand',
@@ -1150,88 +795,80 @@ export default function App() {
              }, { target: 'discard', playerId: player.id });
              
              if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords);
-             setAbilityMode(null);
+             setTimeout(() => setAbilityMode(null), 100);
           }
       }
   };
   
-  // Handle DOUBLE CLICK on Announced (Showcase) card - Trigger Play Action
   const handleAnnouncedCardDoubleClick = (player: Player, card: Card) => {
+      if (abilityMode || cursorStack) return;
+      if (interactionLock.current) return;
+
       if (player.id !== localPlayerId) return;
       
-      // Check activation conditions
       if (!isAutoAbilitiesEnabled || !gameState.isGameStarted) return;
       if (gameState.activeTurnPlayerId !== localPlayerId) return;
 
       if (!canActivateAbility(card, gameState.currentPhase, gameState.activeTurnPlayerId)) return;
 
-      // Pass dummy coordinates for off-board cards ({-1, -1})
-      // activateAbility will handle it and trigger the mode.
       activateAbility(card, { row: -1, col: -1 });
   };
 
 
   const handleEmptyCellClick = (boardCoords: { row: number, col: number }) => {
+      if (interactionLock.current) return;
       if (!abilityMode || abilityMode.type !== 'ENTER_MODE') return;
 
       const { mode, sourceCoords, sourceCard, payload } = abilityMode;
 
-      // --- PATROL_MOVE (Patrol Agent) ---
       if (mode === 'PATROL_MOVE' && sourceCoords && sourceCard && sourceCoords.row >= 0) {
           const isRow = boardCoords.row === sourceCoords.row;
           const isCol = boardCoords.col === sourceCoords.col;
           
           if (boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
-              setAbilityMode(null);
+              setTimeout(() => setAbilityMode(null), 100);
               return;
           }
 
           if (isRow || isCol) {
                moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
                markAbilityUsed(boardCoords); 
-               setAbilityMode(null);
+               setTimeout(() => setAbilityMode(null), 100);
           }
           return;
       }
 
-      // --- RIOT_MOVE (Riot Agent Step 2) ---
       if (mode === 'RIOT_MOVE' && sourceCoords && sourceCard && payload.vacatedCoords) {
           if (boardCoords.row === payload.vacatedCoords.row && boardCoords.col === payload.vacatedCoords.col) {
               moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
-              markAbilityUsed(boardCoords); // Mark card at destination
-              setAbilityMode(null);
+              markAbilityUsed(boardCoords); 
+              setTimeout(() => setAbilityMode(null), 100);
           }
           return;
       }
       
-      // --- SPAWN_TOKEN (Inventive Maker) ---
       if (mode === 'SPAWN_TOKEN' && sourceCoords && payload.tokenName && sourceCoords.row >= 0) {
-           // Check adjacency
            const isAdj = Math.abs(boardCoords.row - sourceCoords.row) + Math.abs(boardCoords.col - sourceCoords.col) === 1;
            if (isAdj) {
                spawnToken(boardCoords, payload.tokenName, localPlayerId!);
                markAbilityUsed(sourceCoords);
-               setAbilityMode(null);
+               setTimeout(() => setAbilityMode(null), 100);
            }
            return;
       }
 
-      // --- SELECT_CELL (Recon Drone Move) ---
       if (mode === 'SELECT_CELL' && sourceCoords && sourceCard && sourceCoords.row >= 0) {
-           // If allowSelf and clicked self
            if (payload.allowSelf && boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
                 markAbilityUsed(sourceCoords);
-                setAbilityMode(null);
+                setTimeout(() => setAbilityMode(null), 100);
                 return;
            }
-           // Move
            moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
            markAbilityUsed(boardCoords);
-           setAbilityMode(null);
+           setTimeout(() => setAbilityMode(null), 100);
            return;
       }
       
-      // --- SELECT_LINE_START (Mobilization Step 1) ---
       if (mode === 'SELECT_LINE_START' && sourceCard) {
           setAbilityMode({
               type: 'ENTER_MODE',
@@ -1244,16 +881,14 @@ export default function App() {
           return;
       }
 
-      // --- SELECT_LINE_END (Mobilization Step 2) ---
       if (mode === 'SELECT_LINE_END' && sourceCard && payload.firstCoords) {
           const { row: r1, col: c1 } = payload.firstCoords;
           const { row: r2, col: c2 } = boardCoords;
           
           if (r1 === r2 || c1 === c2) {
               scoreLine(r1, c1, r2, c2, localPlayerId!);
-              // Since it's a Command card (Announced), we discard it automatically
               moveItem({ card: sourceCard, source: 'announced', playerId: localPlayerId! }, { target: 'discard', playerId: localPlayerId! });
-              setAbilityMode(null);
+              setTimeout(() => setAbilityMode(null), 100);
           }
           return;
       }
@@ -1270,21 +905,23 @@ export default function App() {
     data: any
   ) => {
     e.preventDefault();
-    e.stopPropagation();
-
-    // If an interaction mode is active, RIGHT CLICK should CANCEL it, NOT open the menu.
+    
     if (abilityMode || cursorStack || playMode) {
-        setAbilityMode(null);
-        setCursorStack(null);
-        setPlayMode(null);
+        // Allow the event to bubble up so the global right-click handler can catch it
+        // and cancel the current mode.
         return;
     }
+
+    e.stopPropagation();
 
     if (localPlayerId === null || !gameState.isGameStarted) return;
     setContextMenuProps({ x: e.clientX, y: e.clientY, type, data });
   };
   
     const handleDoubleClickBoardCard = (card: Card, boardCoords: { row: number, col: number }) => {
+        if (abilityMode || cursorStack) return;
+        if (interactionLock.current) return;
+
         const isOwner = card.ownerId === localPlayerId;
 
         if (isOwner && card.isFaceDown) {
@@ -1304,10 +941,15 @@ export default function App() {
     };
     
     const handleDoubleClickEmptyCell = (boardCoords: { row: number, col: number }) => {
+        if (abilityMode || cursorStack) return;
+        if (interactionLock.current) return;
         handleTriggerHighlight({ type: 'cell', row: boardCoords.row, col: boardCoords.col });
     };
 
     const handleDoubleClickHandCard = (player: Player, card: Card, cardIndex: number) => {
+        if (abilityMode || cursorStack) return;
+        if (interactionLock.current) return;
+
         if (player.id === localPlayerId) {
             closeAllModals();
             const sourceItem: DragItem = { card, source: 'hand', playerId: player.id, cardIndex };
@@ -1327,6 +969,8 @@ export default function App() {
     };
 
     const handleDoubleClickPileCard = (player: Player, card: Card, cardIndex: number, source: 'deck' | 'discard') => {
+        if (abilityMode || cursorStack) return;
+        if (interactionLock.current) return;
         const sourceItem: DragItem = { card, source, playerId: player.id, cardIndex };
         moveItem(sourceItem, { target: 'hand', playerId: player.id });
     };
@@ -1381,15 +1025,12 @@ export default function App() {
             items.push({ label: 'View', isBold: true, onClick: () => setViewingCard({ card, player: owner }) });
         }
         
-        // --- New "Play" Option for Command Cards in Showcase ---
-        // Logic: Must be Owner, Must be Announced Card, Must be Command Card, Must be Command Phase (1 or 3)
         if (!isBoardItem && canControl && card.deck === DeckType.Command) {
              if (gameState.currentPhase === 1 || gameState.currentPhase === 3) {
                  items.push({ 
                      label: 'Play', 
                      isBold: true, 
                      onClick: () => {
-                         // Use dummy coords for off-board activation
                          activateAbility(card, { row: -1, col: -1 }); 
                      }
                  });
@@ -1660,12 +1301,10 @@ export default function App() {
     }
   };
 
-  // New handler for Mouse Down on a counter (starts drag)
   const handleCounterMouseDown = (type: string, e: React.MouseEvent) => {
       lastClickPos.current = { x: e.clientX, y: e.clientY };
       
       setCursorStack(prev => {
-          // Start in Drag Mode
           if (prev && prev.type === type) {
               return { type, count: prev.count + 1, isDragging: true, sourceCoords: prev.sourceCoords };
           }
@@ -1682,7 +1321,6 @@ export default function App() {
         <div className="text-center p-4 flex flex-col items-center">
           <h1 className="text-5xl font-bold mb-12">New Avalon: Skirmish</h1>
           <div className="flex flex-col space-y-4 w-64">
-            {/* ... Menu Buttons ... */}
             <div className="flex items-center space-x-2">
                 <button onClick={handleCreateGame} className={`${buttonClass} flex-grow`}>
                   Start Game
@@ -1790,10 +1428,8 @@ export default function App() {
         onToggleAutoAbilities={setIsAutoAbilitiesEnabled}
       />
       
-      {/* Main Content Layout - Switching based on listMode */}
       {isListMode ? (
         <div className="relative h-full w-full pt-14 overflow-hidden bg-gray-900">
-            {/* Left Column: Local Player - Absolute Left */}
             {localPlayer && (
                 <div 
                     ref={leftPanelRef}
@@ -1835,7 +1471,6 @@ export default function App() {
                 </div>
             )}
 
-            {/* Center Column: Game Board - Absolute Centered */}
             <div 
                 className="absolute top-14 bottom-0 z-10 flex items-center justify-center pointer-events-none w-full left-0"
             >
@@ -1872,7 +1507,6 @@ export default function App() {
                  </div>
             </div>
 
-            {/* Right Column: Opponents - Absolute Right */}
             <div className="absolute right-0 top-14 bottom-0 z-30 w-[34.2rem] bg-panel-bg shadow-xl flex flex-col pt-[3px] pb-[3px] border-l border-gray-700 gap-[3px]">
                  {gameState.players
                     .filter(p => p.id !== localPlayerId)
@@ -1915,7 +1549,6 @@ export default function App() {
             </div>
         </div>
       ) : (
-        /* Standard Mode Layout */
         <main className="pt-14 h-screen w-full flex items-center justify-center py-[2px] px-[2px]">
             <GameBoard
             board={gameState.board}
@@ -1944,7 +1577,6 @@ export default function App() {
             disableActiveHighlights={isTargetingMode}
             />
             
-             {/* Player panels (Absolute Positioning) */}
             {gameState.players.map((player) => (
                 <PlayerPanel
                 key={player.id}
@@ -1982,19 +1614,16 @@ export default function App() {
         </main>
       )}
 
-      {/* Unified Cursor Follower (Stack or Ability Mode) */}
       {(cursorStack || (abilityMode && abilityMode.payload?.tokenType)) && (
           <div 
             ref={cursorFollowerRef}
             className="fixed pointer-events-none select-none z-[100000] flex items-center justify-center"
             style={{ left: mousePos.current.x - 2, top: mousePos.current.y - 2 }}
           >
-              {/* Case 1: Token (CursorStack OR Ability placing Token) */}
               {(cursorStack || abilityMode?.payload?.tokenType) && (
                   <div className="relative w-12 h-12 rounded-full bg-gray-500 border-[3px] border-white flex items-center justify-center shadow-xl">
                        {(() => {
                            const type = cursorStack ? cursorStack.type : abilityMode!.payload.tokenType;
-                           // Use count from cursorStack OR fall back to payload.count for ability mode
                            const count = cursorStack ? cursorStack.count : (abilityMode?.payload?.count || 1);
                            
                            let iconUrl = STATUS_ICONS[type];
@@ -2009,7 +1638,6 @@ export default function App() {
                                </span>
                            );
                        })()}
-                       {/* Badge - Always show if we have a count, even if it's 1 */}
                        <div className="absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center border border-white">
                            {cursorStack ? cursorStack.count : (abilityMode?.payload?.count || 1)}
                        </div>
@@ -2018,7 +1646,6 @@ export default function App() {
           </div>
       )}
 
-      {/* Spectator Mode overlay */}
       {isSpectator && !isListMode && (
         <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-black bg-opacity-70 p-4 rounded-lg z-50">
           <p className="text-xl font-bold text-center">Spectator Mode</p>
@@ -2026,7 +1653,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Reveal Request Modal */}
       {(() => {
           const request = gameState.revealRequests.find(r => r.toPlayerId === localPlayerId);
           if (!request) return null;
@@ -2041,7 +1667,6 @@ export default function App() {
           ) : null;
       })()}
       
-      {/* Team Assignment Modal */}
       {isTeamAssignOpen && isHost && (
         <TeamAssignmentModal
           players={gameState.players.filter(p => !p.isDisconnected)}
@@ -2051,21 +1676,18 @@ export default function App() {
         />
       )}
       
-      {/* Ready Check Modal */}
       {gameState.isReadyCheckActive && !isSpectator && localPlayer && (
         <ReadyCheckModal
             players={gameState.players.filter(p => !p.isDummy && !p.isDisconnected)}
             localPlayer={localPlayer}
             onReady={playerReady}
+            onCancel={cancelReadyCheck}
         />
       )}
 
-      {/* Discard Pile Modal */}
       {viewingDiscard && (() => {
           const playerInState = gameState.players.find(p => p.id === viewingDiscard.player.id);
           const currentCards = playerInState ? playerInState.discard : [];
-          // Pick Mode specific filtering? No, assume user finds what they need visually or we could filter devices.
-          // Let's filter devices if in pickMode and specifically looking for devices
           const displayedCards = viewingDiscard.pickMode 
             ? currentCards.filter(c => c.types?.includes('Device')) 
             : currentCards;
@@ -2081,15 +1703,10 @@ export default function App() {
               onCardContextMenu={(e, cardIndex) => openContextMenu(e, 'discardCard', { card: displayedCards[cardIndex], player: viewingDiscard.player, cardIndex })}
               onCardDoubleClick={(cardIndex) => {
                   if (viewingDiscard.pickMode) {
-                      // Handle retrieval logic
-                      recoverDiscardedCard(viewingDiscard.player.id, cardIndex); // Note: index must match original array index? 
-                      // actually recoverDiscardedCard expects index in the real discard array.
-                      // If we filter, indices shift.
-                      // Fix: Find the real index in original array.
                       const realIndex = currentCards.indexOf(displayedCards[cardIndex]);
                       if (realIndex > -1) {
                            recoverDiscardedCard(viewingDiscard.player.id, realIndex);
-                           setViewingDiscard(null); // Close after picking
+                           setViewingDiscard(null); 
                       }
                   } else {
                       handleDoubleClickPileCard(viewingDiscard.player, displayedCards[cardIndex], cardIndex, 'discard');
@@ -2103,7 +1720,6 @@ export default function App() {
           );
       })()}
 
-      {/* Deck View Modal */}
        {viewingDeck && (() => {
           const playerInState = gameState.players.find(p => p.id === viewingDeck.id);
           const currentCards = playerInState ? playerInState.deck : [];
@@ -2126,7 +1742,6 @@ export default function App() {
           );
       })()}
 
-      {/* Tokens and Counters Modals */}
        <TokensModal
         isOpen={isTokensModalOpen}
         onClose={() => setTokensModalOpen(false)}
@@ -2160,7 +1775,6 @@ export default function App() {
         />
       )}
 
-      {/* Render the context menu if active */}
       {renderedContextMenu}
     </div>
   );

@@ -27,7 +27,7 @@ interface CardProps {
 
 /**
  * A component that displays a single card. It can render in different states:
- * face up, face down, as a counter, or with status effect overlays.
+ * face up, face down, or as a counter.
  * @param {CardProps} props The properties for the component.
  * @returns {React.ReactElement} The rendered card.
  */
@@ -43,6 +43,13 @@ export const Card: React.FC<CardProps> = ({ card, isFaceUp, playerColorMap, loca
   useEffect(() => {
     setHighlightDismissed(false);
   }, [activePhaseIndex]);
+
+  // Reset dismissed state when active highlights are re-enabled (e.g. exiting targeting mode or finishing a stack)
+  useEffect(() => {
+    if (!disableActiveHighlights) {
+        setHighlightDismissed(false);
+    }
+  }, [disableActiveHighlights]);
 
   const [currentImageSrc, setCurrentImageSrc] = useState(card.imageUrl);
 
@@ -122,7 +129,7 @@ export const Card: React.FC<CardProps> = ({ card, isFaceUp, playerColorMap, loca
 
   const handleCardClick = (e: React.MouseEvent) => {
       // If the card is currently highlighted, a click dismisses the highlight
-      // FIX: Only the owner can dismiss the highlight
+      // Only the owner can dismiss the highlight to avoid confusion
       if (shouldHighlight && localPlayerId === card.ownerId) {
           setHighlightDismissed(true);
       }

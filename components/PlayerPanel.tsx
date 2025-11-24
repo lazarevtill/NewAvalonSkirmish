@@ -397,6 +397,7 @@ export const PlayerPanel: React.FC<PlayerPanelProps> = ({
                                 playerColorMap={playerColorMap}
                                 localPlayerId={localPlayerId}
                                 imageRefreshVersion={imageRefreshVersion}
+                                disableActiveHighlights={disableActiveHighlights}
                             />
                         </div>
                     );
@@ -535,6 +536,7 @@ export const PlayerPanel: React.FC<PlayerPanelProps> = ({
                                             localPlayerId={localPlayerId} 
                                             imageRefreshVersion={imageRefreshVersion}
                                             disableTooltip={true}
+                                            disableActiveHighlights={disableActiveHighlights}
                                         />
                                     </div>
                                     {/* Right: Card Details (Using inline TooltipContent) */}
@@ -717,6 +719,7 @@ export const PlayerPanel: React.FC<PlayerPanelProps> = ({
                           playerColorMap={playerColorMap}
                           localPlayerId={localPlayerId}
                           imageRefreshVersion={imageRefreshVersion}
+                          disableActiveHighlights={disableActiveHighlights}
                       />
                   </div>
               );

@@ -12,7 +12,8 @@ export type AbilityModeType =
     | 'RIOT_MOVE'          // Specific: Riot Agent follow-up move
     | 'PATROL_MOVE'        // Specific: Patrol Agent line move
     | 'SWAP_POSITIONS'     // Specific: Reckless Provocateur swap
-    | 'TRANSFER_STATUS_SELECT' // Specific: Select card to steal status from
+    | 'TRANSFER_STATUS_SELECT' // Specific: Select card to steal status from (Single)
+    | 'TRANSFER_ALL_STATUSES'  // Specific: Select card to steal ALL valid statuses from
     | 'SPAWN_TOKEN'        // Specific: Spawn a token
     | 'RETRIEVE_DEVICE'    // Specific: Open discard to retrieve device
     | 'REVEAL_ENEMY'       // Specific: Recon drone reveal
@@ -28,8 +29,12 @@ export interface AbilityAction {
     sourceCoords?: { row: number, col: number }; // Context
     payload?: any;          // Extra data (e.g. allowed target IDs)
     targetReq?: string;     // Short description of the required target for UI tooltips
-    excludeOwnerId?: number; // For CREATE_STACK: Prevent targeting owner's own cards
-    onlyOpponents?: boolean; // For CREATE_STACK: Prevent targeting self AND teammates
+    
+    // --- TARGETING CONSTRAINTS ---
+    excludeOwnerId?: number; // Illegal: Target owner matches this ID
+    targetOwnerId?: number;  // Legal: Target owner MUST match this ID
+    onlyOpponents?: boolean; // Legal: Must be opponent (not self, not teammate)
+    onlyFaceDown?: boolean;  // Legal: Must be Face Down / Unrevealed AND have no 'Revealed' token
 }
 
 export const PHASE_KEYWORDS: Record<number, string> = {
@@ -168,15 +173,16 @@ export const getCardAbilityAction = (
                 sourceCard: card,
                 sourceCoords: coords,
                 payload: {
-                    filter: (target: Card, tRow: number, tCol: number) => isAdjacent(coords.row, coords.col, tRow, tCol)
+                    // Explicitly exclude self, even though isAdjacent implies it
+                    filter: (target: Card, tRow: number, tCol: number) => isAdjacent(coords.row, coords.col, tRow, tCol) && target.id !== card.id
                 }
             };
         }
-        // Commit: Move 1 counter from another allied card to this card.
+        // Commit: Move all counters from another allied card to this card (except Threat/Support/Power).
         if (phaseIndex === 4) {
              return {
                 type: 'ENTER_MODE',
-                mode: 'TRANSFER_STATUS_SELECT',
+                mode: 'TRANSFER_ALL_STATUSES',
                 sourceCard: card,
                 sourceCoords: coords,
                 payload: {
@@ -186,8 +192,13 @@ export const getCardAbilityAction = (
                         const isAlly = target.ownerId === ownerId || isTeammate(ownerPlayer, targetOwner);
                         // Must not be self
                         if (target.id === card.id) return false;
-                        // Must have at least one counter (status)
-                        return isAlly && target.statuses && target.statuses.length > 0;
+                        // Must be an ally
+                        if (!isAlly) return false;
+                        
+                        // Must have at least one transferable counter (status)
+                        // Transferable = NOT 'Support', 'Threat'.
+                        // Power is ignored as it's a property, so if only power exists, return false effectively.
+                        return target.statuses && target.statuses.some(s => !['Support', 'Threat'].includes(s.type));
                     }
                 }
             };
@@ -197,7 +208,6 @@ export const getCardAbilityAction = (
     // --- DATA LIBERATOR ---
     if (name.includes('data liberator')) {
         // Deploy: Exploit any card.
-        // (Previously in Setup, moved to Deploy per request)
         if (phaseIndex === 2) {
             return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1 };
         }
@@ -215,7 +225,8 @@ export const getCardAbilityAction = (
                 payload: {
                     tokenType: 'Aim',
                     filter: (target: Card, tRow: number, tCol: number) => {
-                        return (tRow === coords.row || tCol === coords.col);
+                        // EXCLUDE SELF to avoid accidental self-targeting
+                        return (tRow === coords.row || tCol === coords.col) && target.id !== card.id;
                     }
                 }
             };
@@ -238,14 +249,14 @@ export const getCardAbilityAction = (
     // --- VIGILANT SPOTTER ---
     if (name.includes('vigilant spotter')) {
         // Commit: Each opponent reveals 1 cards to you.
-        // Targeting Restriction: Opponents only.
+        // Legal targets: Opponents only, and only Face Down/Unrevealed cards.
         if (phaseIndex === 4) {
              return {
                 type: 'CREATE_STACK',
                 tokenType: 'Revealed',
                 count: 1,
-                excludeOwnerId: ownerId, // Block targeting self
-                onlyOpponents: true // Strict check for teammates
+                onlyOpponents: true, 
+                onlyFaceDown: true 
             };
         }
     }
@@ -290,7 +301,7 @@ export const getCardAbilityAction = (
                 }
             };
         }
-        // Commit: Reveal card of adjacent owner
+        // Commit: Reveal card of adjacent owner.
         if (phaseIndex === 4) {
              return {
                 type: 'ENTER_MODE',
@@ -298,9 +309,20 @@ export const getCardAbilityAction = (
                 sourceCard: card,
                 sourceCoords: coords,
                 payload: {
-                     filter: (target: Card, tRow: number, tCol: number) => 
-                        isAdjacent(coords.row, coords.col, tRow, tCol) && 
-                        target.ownerId !== ownerId
+                     // This filter is for SELECTING the target to reveal (Step 1).
+                     // It must be an adjacent card belonging to an OPPONENT.
+                     filter: (target: Card, tRow: number, tCol: number) => {
+                        // Must be adjacent
+                        if (!isAdjacent(coords.row, coords.col, tRow, tCol)) return false;
+                        
+                        // Opponent Check
+                        const targetOwner = gameState.players.find(p => p.id === target.ownerId);
+                        if (target.ownerId === ownerId || isTeammate(ownerPlayer, targetOwner)) return false;
+
+                        // Note: We do NOT check isFaceDown here because Step 1 is "Select Neighbor",
+                        // not "Select Card to Reveal". Step 2 applies the strict reveal constraints on that owner's cards.
+                        return true;
+                     }
                 }
             };
         }
