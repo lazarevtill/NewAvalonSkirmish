@@ -45,7 +45,7 @@ try {
 }
 
 // --- Server-side Game Logic Utilities ---
-const PLAYER_COLORS = ['blue', 'cyan', 'red', 'orange', 'green', 'purple', 'pink', 'yellow'];
+const PLAYER_COLORS = ['blue', 'purple', 'red', 'green', 'yellow', 'orange', 'pink', 'brown'];
 
 /**
  * Shuffles an array using the Fisher-Yates algorithm.
@@ -486,7 +486,7 @@ wss.on('connection', ws => {
                         ws.send(JSON.stringify({ type: 'JOIN_SUCCESS', playerId: newPlayerId, playerToken: newPlayer.playerToken }));
                         logToGame(gameId, `Player ${newPlayerId} (${newPlayer.name}) joined the game.`);
                         broadcastState(gameId, gameState);
-broadcastGamesList();
+                        broadcastGamesList();
                         console.log(`New player ${newPlayerId} added to game ${gameId}.`);
                         return;
                     }
@@ -543,6 +543,21 @@ broadcastGamesList();
                         } else {
                             console.warn(`Non-host player ${ws.playerId} attempted to force sync game ${gameIdToSync}.`);
                         }
+                    }
+                    break;
+                }
+                case 'UPDATE_DECK_DATA': {
+                    // Allows the host to push their local deck definitions to the server,
+                    // ensuring all players use the same card data (images, abilities, etc.)
+                    const { deckData } = data;
+                    if (deckData && deckData.cardDatabase && deckData.deckFiles) {
+                         console.log(`Received updated deck data from client ${ws.playerId}`);
+                         cardDatabase = deckData.cardDatabase;
+                         tokenDatabase = deckData.tokenDatabase || {};
+                         deckFiles = deckData.deckFiles;
+                         // Ideally, we might want to broadcast a specific 'REFRESH_ASSETS' event here,
+                         // but standard state updates usually carry the card objects anyway.
+                         // This mainly fixes new player creation logic on the server side.
                     }
                     break;
                 }

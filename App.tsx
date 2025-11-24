@@ -2,7 +2,7 @@
  * @file This is the root component of the application, orchestrating the entire UI and game state.
  */
 
-import React, { useState, useMemo, useEffect, useRef, useLayoutEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
 import { GameBoard } from './components/GameBoard';
 import { PlayerPanel } from './components/PlayerPanel';
 import { Header } from './components/Header';
@@ -18,9 +18,12 @@ import { DeckBuilderModal } from './components/DeckBuilderModal';
 import { SettingsModal } from './components/SettingsModal';
 import { RulesModal } from './components/RulesModal';
 import { useGameState } from './hooks/useGameState';
-import type { Player, Card, DragItem, DropTarget, PlayerColor, CardStatus, CustomDeckFile, HighlightData } from './types';
+import type { Player, Card, DragItem, DropTarget, PlayerColor, CardStatus, CustomDeckFile, HighlightData, GameState } from './types';
 import { DeckType, GameMode } from './types';
 import { STATUS_ICONS, STATUS_DESCRIPTIONS } from './constants';
+import { getCardAbilityAction, canActivateAbility } from './utils/autoAbilities';
+import type { AbilityAction } from './utils/autoAbilities';
+import { decksData, countersDatabase } from './decks';
 
 /**
  * Defines the different types of items that can appear in a context menu.
@@ -124,6 +127,14 @@ type ContextMenuParams = {
   data: any; // Context-specific data (e.g., card, player, coordinates).
 }
 
+// Add sourceCoords to local cursorStack state to track ability origin
+interface CursorStackState {
+    type: string; 
+    count: number; 
+    isDragging: boolean;
+    sourceCoords?: {row: number, col: number}; // Origin for ability tracking
+}
+
 /**
  * The main application component. It manages the overall layout, modals,
  * and interactions between different parts of the game interface.
@@ -164,6 +175,8 @@ export default function App() {
     addAnnouncedCardStatus,
     removeAnnouncedCardStatus,
     modifyAnnouncedCardPower,
+    addHandCardStatus,
+    removeHandCardStatus,
     flipBoardCard,
     flipBoardCardFaceDown,
     revealHandCard,
@@ -177,6 +190,10 @@ export default function App() {
     forceReconnect,
     triggerHighlight,
     latestHighlight,
+    nextPhase,
+    prevPhase,
+    setPhase,
+    markAbilityUsed,
   } = useGameState();
 
   // State for managing UI modals.
@@ -204,13 +221,30 @@ export default function App() {
   const [playMode, setPlayMode] = useState<{ card: Card; sourceItem: DragItem; faceDown?: boolean } | null>(null);
   
   // State for "Cursor Stack", where clicking the board applies counters.
-  const [cursorStack, setCursorStack] = useState<{ type: string; count: number } | null>(null);
+  // isDragging indicates if the user is currently holding the mouse down (Drag Mode) or if it's sticky (Click Mode)
+  const [cursorStack, setCursorStack] = useState<CursorStackState | null>(null);
   const cursorFollowerRef = useRef<HTMLDivElement>(null);
   const lastClickPos = useRef<{x: number, y: number} | null>(null);
   
   // State for highlighting a row or column on the board.
   const [highlight, setHighlight] = useState<HighlightData | null>(null);
   
+  // State for Auto-Abilities Feature
+  const [isAutoAbilitiesEnabled, setIsAutoAbilitiesEnabled] = useState(false);
+  // Stores the current active ability state (e.g. "Select a target for IP Dept Agent")
+  const [abilityMode, setAbilityMode] = useState<AbilityAction | null>(null);
+  
+  // New state to track which cells are valid targets for the current ability
+  const [validTargets, setValidTargets] = useState<{row: number, col: number}[]>([]);
+  // New state to track valid targets in HAND
+  const [validHandTargets, setValidHandTargets] = useState<{playerId: number, cardIndex: number}[]>([]);
+
+  // State for displaying "No Target" overlay on a specific board cell
+  const [noTargetOverlay, setNoTargetOverlay] = useState<{row: number, col: number} | null>(null);
+
+  // Generic mouse position tracker for tooltips
+  const mousePos = useRef({ x: 0, y: 0 });
+
   // References and state for List Mode dynamic layout
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const boardContainerRef = useRef<HTMLDivElement>(null);
@@ -282,60 +316,380 @@ export default function App() {
           window.removeEventListener('resize', calculateWidth);
           clearTimeout(timer);
       };
-  }, [isListMode, localPlayerId, gameState.activeGridSize, localPlayer, gameState.isGameStarted, gameState.players.length]);
+  }, [isListMode, localPlayerId, gameState.activeGridSize]);
 
 
   // Ensure cursor follower position is initialized immediately upon stack creation
   useLayoutEffect(() => {
       if (cursorStack && cursorFollowerRef.current && lastClickPos.current) {
-          cursorFollowerRef.current.style.left = `${lastClickPos.current.x + 1}px`;
-          cursorFollowerRef.current.style.top = `${lastClickPos.current.y + 1}px`;
+          // Shifted closer (-2px = 3px closer than +1px)
+          cursorFollowerRef.current.style.left = `${lastClickPos.current.x - 2}px`;
+          cursorFollowerRef.current.style.top = `${lastClickPos.current.y - 2}px`;
       }
   }, [cursorStack]);
 
-  // Mouse tracking for cursor stack
+  // Mouse tracking for cursor stack / ability mode
   useEffect(() => {
       const handleMouseMove = (e: MouseEvent) => {
-          if (cursorFollowerRef.current && cursorStack) {
-              cursorFollowerRef.current.style.left = `${e.clientX + 1}px`;
-              cursorFollowerRef.current.style.top = `${e.clientY + 1}px`;
+          mousePos.current = { x: e.clientX, y: e.clientY };
+
+          if (cursorFollowerRef.current && (cursorStack || abilityMode)) {
+              // Shifted closer (-2px = 3px closer than +1px)
+              cursorFollowerRef.current.style.left = `${e.clientX - 2}px`;
+              cursorFollowerRef.current.style.top = `${e.clientY - 2}px`;
           }
       };
-
-      if (cursorStack) {
-          window.addEventListener('mousemove', handleMouseMove);
+      
+      window.addEventListener('mousemove', handleMouseMove);
+      
+      // Initialize position if we entered mode without moving mouse yet
+      if ((cursorStack || abilityMode) && cursorFollowerRef.current) {
+           cursorFollowerRef.current.style.left = `${mousePos.current.x - 2}px`;
+           cursorFollowerRef.current.style.top = `${mousePos.current.y - 2}px`;
       }
 
       return () => {
           window.removeEventListener('mousemove', handleMouseMove);
       };
-  }, [cursorStack]);
+  }, [cursorStack, abilityMode]);
 
-  // Clear cursor stack on right click or escape
+  // Handle Global MouseUp for applying tokens or cancelling interactions
+  useEffect(() => {
+      const handleGlobalMouseUp = (e: MouseEvent) => {
+          if (!cursorStack) return;
+
+          // Identify what we dropped onto using data attribute from GridCell or HandCard
+          const target = document.elementFromPoint(e.clientX, e.clientY);
+          
+          // 1. Check for Drop on HAND CARD
+          const handCard = target?.closest('[data-hand-card]');
+          if (handCard) {
+              const attr = handCard.getAttribute('data-hand-card');
+              if (attr) {
+                  const [playerIdStr, cardIndexStr] = attr.split(',');
+                  const playerId = parseInt(playerIdStr, 10);
+                  const cardIndex = parseInt(cardIndexStr, 10);
+                  
+                  // Special logic for 'Revealed' token on Hand Cards
+                  if (cursorStack.type === 'Revealed') {
+                      if (playerId === localPlayerId) {
+                          // Reveal own card
+                          revealHandCard(playerId, cardIndex, 'all');
+                      } else {
+                          // Request reveal for opponent
+                          if (localPlayerId !== null) {
+                              requestCardReveal({ source: 'hand', ownerId: playerId, cardIndex }, localPlayerId);
+                          }
+                      }
+                      
+                      // Track ability usage if applicable
+                      if (cursorStack.sourceCoords) {
+                          markAbilityUsed(cursorStack.sourceCoords);
+                      }
+
+                      // Decrease stack count
+                      if (cursorStack.count > 1) {
+                          setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                      } else {
+                          setCursorStack(null);
+                      }
+                      return;
+                  }
+
+                   // Generic Counter application to hand cards (e.g. Power+/-)
+                   handleDrop({
+                      card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                      source: 'counter_panel',
+                      statusType: cursorStack.type,
+                      count: 1 // Apply 1 at a time from stack
+                   }, { target: 'hand', playerId, cardIndex, boardCoords: undefined }); // DropTarget enhanced with cardIndex support
+                   
+                   // Track ability usage if applicable
+                   if (cursorStack.sourceCoords) {
+                       markAbilityUsed(cursorStack.sourceCoords);
+                   }
+
+                   if (cursorStack.count > 1) {
+                       setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                   } else {
+                       setCursorStack(null);
+                   }
+                  return;
+              }
+          }
+
+          // 2. Check for Drop on BOARD CELL
+          const boardCell = target?.closest('[data-board-coords]');
+          if (boardCell) {
+              // Target is a board cell - Apply the token
+              const coords = boardCell.getAttribute('data-board-coords');
+              if (coords) {
+                  const [rowStr, colStr] = coords.split(',');
+                  const row = parseInt(rowStr, 10);
+                  const col = parseInt(colStr, 10);
+                  
+                  const targetCard = gameState.board[row][col].card;
+
+                  // Special logic for Revealed Token on Face Down Opponent Card
+                  if (targetCard && cursorStack.type === 'Revealed' && targetCard.isFaceDown && targetCard.ownerId !== localPlayerId && localPlayerId !== null) {
+                       requestCardReveal({ source: 'board', ownerId: targetCard.ownerId!, boardCoords: { row, col } }, localPlayerId);
+                       
+                       // Track ability usage if applicable
+                       if (cursorStack.sourceCoords) {
+                           markAbilityUsed(cursorStack.sourceCoords);
+                       }
+                       
+                       if (cursorStack.count > 1) {
+                           setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                       } else {
+                           setCursorStack(null);
+                       }
+                       return;
+                  }
+
+                  // Standard Token/Counter application
+                  // If abilityMode logic triggered this (via auto-ability with payload.tokenType),
+                  // verify the filter if possible. BUT `cursorStack` is usually for manual drag.
+                  // For ability mode tokens, we handle them in `handleBoardCardClick`. 
+                  // If this IS ability mode token (attached via setCursorStack in handleBoardCardClick branch),
+                  // we accept it here.
+                  
+                  handleDrop({
+                      card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                      source: 'counter_panel',
+                      statusType: cursorStack.type,
+                      count: 1
+                  }, { target: 'board', boardCoords: { row, col }});
+                  
+                   // Track ability usage if applicable
+                   if (cursorStack.sourceCoords) {
+                       markAbilityUsed(cursorStack.sourceCoords);
+                   }
+
+                  if (cursorStack.count > 1) {
+                      setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                  } else {
+                      setCursorStack(null);
+                  }
+              }
+          } else {
+              // Target is NOT a board cell or hand card
+              
+              const isOverModal = target?.closest('.counter-modal-content');
+              
+              if (cursorStack.isDragging) {
+                  if (isOverModal) {
+                      // If dragging and released over the modal (source), switch to "Stick" mode (isDragging = false)
+                      setCursorStack(prev => prev ? { ...prev, isDragging: false } : null);
+                  } else {
+                      // Released in empty space (not board, not modal) -> Cancel
+                      setCursorStack(null);
+                  }
+              } else {
+                   // "Stick" mode (isDragging = false) - Clicked somewhere
+                   // If clicked on empty space (not board), cancel.
+                   // If clicked on modal, do nothing (maybe selecting another).
+                   if (!isOverModal) {
+                       setCursorStack(null);
+                   }
+              }
+          }
+      };
+
+      window.addEventListener('mouseup', handleGlobalMouseUp);
+      return () => {
+          window.removeEventListener('mouseup', handleGlobalMouseUp);
+      };
+  }, [cursorStack, handleDrop, gameState, localPlayerId, revealHandCard, requestCardReveal, markAbilityUsed]);
+
+  // Spacebar to advance Phase
+  useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+          if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement).tagName)) {
+              return;
+          }
+          if (e.code === 'Space') {
+              e.preventDefault(); 
+              if (gameState.isGameStarted) {
+                  nextPhase();
+              }
+          }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => {
+          window.removeEventListener('keydown', handleKeyDown);
+      };
+  }, [nextPhase, gameState.isGameStarted]);
+  
+  // Helper to calculate valid targets, extracted for re-use
+  const calculateValidTargets = (action: AbilityAction | null, currentGameState: GameState, playerId: number | null) => {
+      if (!action || action.type !== 'ENTER_MODE') {
+          return [];
+      }
+
+      const targets: {row: number, col: number}[] = [];
+      const { mode, payload, sourceCoords } = action;
+      const board = currentGameState.board;
+      const gridSize = board.length;
+      
+      // 1. Generic TARGET selection (e.g. Stun, Exploit, Destroy)
+      if (mode === 'SELECT_TARGET' && payload.filter) {
+           for(let r=0; r<gridSize; r++) {
+               for(let c=0; c<gridSize; c++) {
+                   const cell = board[r][c];
+                   if (cell.card && payload.filter(cell.card, r, c)) {
+                       targets.push({row: r, col: c});
+                   }
+               }
+           }
+      }
+      // 2. Patrol Move (Empty cell in same row/col)
+      else if (mode === 'PATROL_MOVE' && sourceCoords) {
+          for(let r=0; r<gridSize; r++) {
+              for(let c=0; c<gridSize; c++) {
+                  // Must be same row OR same col
+                  const isLine = (r === sourceCoords.row || c === sourceCoords.col);
+                  const isSame = (r === sourceCoords.row && c === sourceCoords.col);
+                  const isEmpty = !board[r][c].card;
+                  
+                  // Allow moving to empty cell OR cancelling by clicking same cell
+                  if (isLine && (isEmpty || isSame)) {
+                      targets.push({row: r, col: c});
+                  }
+              }
+          }
+      }
+      // 3. Riot Push (Adjacent opponent who can be pushed into empty space)
+      else if (mode === 'RIOT_PUSH' && sourceCoords) {
+          const neighbors = [
+              {r: sourceCoords.row - 1, c: sourceCoords.col},
+              {r: sourceCoords.row + 1, c: sourceCoords.col},
+              {r: sourceCoords.row, c: sourceCoords.col - 1},
+              {r: sourceCoords.row, c: sourceCoords.col + 1},
+          ];
+          
+          neighbors.forEach(nb => {
+              // Check bounds
+              if (nb.r >= 0 && nb.r < gridSize && nb.c >= 0 && nb.c < gridSize) {
+                   const targetCard = board[nb.r][nb.c].card;
+                   
+                   // Use playerId passed to function
+                   // Allow pushing stunned cards (opponents can move them)
+                   if (targetCard && targetCard.ownerId !== playerId) {
+                       // Calculate push destination
+                       const dRow = nb.r - sourceCoords.row;
+                       const dCol = nb.c - sourceCoords.col;
+                       const pushRow = nb.r + dRow;
+                       const pushCol = nb.c + dCol;
+                       
+                       // Check dest bounds and emptiness
+                       if (pushRow >= 0 && pushRow < gridSize && pushCol >= 0 && pushCol < gridSize) {
+                           if (!board[pushRow][pushCol].card) {
+                               targets.push({row: nb.r, col: nb.c});
+                           }
+                       }
+                   }
+              }
+          });
+      }
+      // 4. Riot Move (Specifically the vacated cell)
+      else if (mode === 'RIOT_MOVE' && payload.vacatedCoords) {
+          targets.push(payload.vacatedCoords);
+          // Also highlight self to indicate "stay" option
+          if(sourceCoords) targets.push(sourceCoords);
+      }
+      
+      return targets;
+  };
+
+  // Helper to check if an ability action has ANY valid targets (Board, Hand, Deck, Discard)
+  const checkActionHasTargets = (action: AbilityAction, currentGameState: GameState, playerId: number | null): boolean => {
+       // 1. Check Board Targets
+       const boardTargets = calculateValidTargets(action, currentGameState, playerId);
+       if (boardTargets.length > 0) return true;
+
+       // 2. Check Hand Targets (For 'DESTROY' actions targeting Revealed cards)
+       if (action.mode === 'SELECT_TARGET' && action.payload?.filter) {
+           // Iterate all players hands
+           for (const p of currentGameState.players) {
+               if (p.hand.some((card) => action.payload.filter!(card))) {
+                   return true;
+               }
+           }
+       }
+       
+       // 3. (Future) Check Deck/Discard if needed
+
+       return false;
+  };
+
+  // Calculate valid targets (Board AND Hand) when abilityMode changes or cursor stack changes
+  useEffect(() => {
+      // 1. Calculate Board Targets
+      const boardTargets = calculateValidTargets(abilityMode, gameState, localPlayerId);
+      
+      // 2. Calculate Hand Targets
+      const handTargets: {playerId: number, cardIndex: number}[] = [];
+      
+      // Scenario A: Ability Mode Active
+      if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_TARGET') {
+          // If the ability has a filter (e.g. Destroy revealed card), check all hands
+          if (abilityMode.payload.filter) {
+              gameState.players.forEach(p => {
+                  p.hand.forEach((card, index) => {
+                      if (abilityMode.payload.filter!(card)) {
+                          handTargets.push({ playerId: p.id, cardIndex: index });
+                      }
+                  });
+              });
+          }
+      } 
+      // Scenario B: Cursor Stack Active (Dragging Token)
+      else if (cursorStack) {
+          // Check if this token type can be applied to hand
+          const counterDef = countersDatabase[cursorStack.type];
+          if (counterDef && counterDef.allowedTargets && counterDef.allowedTargets.includes('hand')) {
+               // Add all hand cards as valid targets
+               gameState.players.forEach(p => {
+                   p.hand.forEach((card, index) => {
+                       handTargets.push({ playerId: p.id, cardIndex: index });
+                   });
+               });
+          }
+      }
+
+      setValidTargets(boardTargets);
+      setValidHandTargets(handTargets);
+  }, [abilityMode, cursorStack, gameState.board, gameState.players, localPlayerId]);
+
+  // Clear cursor stack/ability mode on right click or escape
   useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
           if (e.key === 'Escape') {
               setCursorStack(null);
               setPlayMode(null);
+              setAbilityMode(null);
           }
       };
       
       const handleRightClick = (e: MouseEvent) => {
-          if (cursorStack || playMode) {
+          // Only handle global right clicks if we have an active mode
+          if (cursorStack || playMode || abilityMode) {
               e.preventDefault();
               setCursorStack(null);
               setPlayMode(null);
+              setAbilityMode(null);
           }
       };
 
       window.addEventListener('keydown', handleKeyDown);
-      window.addEventListener('contextmenu', handleRightClick);
+      window.addEventListener('contextmenu', handleRightClick); // Use 'contextmenu' event for Right Click
       
       return () => {
           window.removeEventListener('keydown', handleKeyDown);
           window.removeEventListener('contextmenu', handleRightClick);
       }
-  }, [cursorStack, playMode]);
+  }, [cursorStack, playMode, abilityMode]);
 
   // Effect to handle incoming highlights from the server
   useEffect(() => {
@@ -413,6 +767,201 @@ export default function App() {
       });
   };
 
+  // --- Auto-Abilities & Interactive Mode Handlers ---
+
+  const handleBoardCardClick = (card: Card, boardCoords: { row: number, col: number }) => {
+      // Priority 1: Play Mode (Playing a card from hand)
+      if (playMode) return; // Handled by GridCell internally via handleDrop
+
+      // Priority 2: Cursor Stack (Dropping a token/counter)
+      if (cursorStack) return; // Handled by handleGlobalMouseUp/GridCell
+
+      // Priority 3: Interactive Ability Mode (Resolving an active ability)
+      if (abilityMode && abilityMode.type === 'ENTER_MODE') {
+          const { mode, payload, sourceCard, sourceCoords } = abilityMode;
+
+          // Check if clicked card is a valid target
+          // We re-run the specific logic check to be safe, essentially validating the click
+          
+          // --- A: DESTROY_TARGET (Tactical Agent, IP Dept Agent) ---
+          if (mode === 'SELECT_TARGET' && payload.actionType === 'DESTROY') {
+              if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) {
+                  return;
+              }
+              // Destroy effects can bypass ownership checks
+              moveItem({ 
+                  card, 
+                  source: 'board', 
+                  boardCoords,
+                  bypassOwnershipCheck: true 
+              }, { target: 'discard', playerId: card.ownerId });
+              
+              if (sourceCoords) markAbilityUsed(sourceCoords);
+              setAbilityMode(null); 
+              return;
+          }
+
+          // --- B: SELECT_TARGET (IP Dept, Tactical, Patrol, Riot - Stun/Exploit/Aim) ---
+          if (mode === 'SELECT_TARGET' && payload.tokenType) {
+              if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) {
+                  return; 
+              }
+              handleDrop({
+                  card: { id: 'dummy', deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                  source: 'counter_panel',
+                  statusType: payload.tokenType,
+                  count: payload.count || 1 // UPDATED: Use payload.count if available
+              }, { target: 'board', boardCoords });
+              
+              if (sourceCoords) markAbilityUsed(sourceCoords);
+              setAbilityMode(null);
+              return;
+          }
+
+          // --- C: RIOT_PUSH (Riot Agent) ---
+          if (mode === 'RIOT_PUSH' && sourceCoords) {
+              const isAdj = Math.abs(boardCoords.row - sourceCoords.row) + Math.abs(boardCoords.col - sourceCoords.col) === 1;
+              if (!isAdj || card.ownerId === localPlayerId) return;
+
+              // Check if target is stunned - REMOVED check, opponents can move stunned cards.
+
+              const dRow = boardCoords.row - sourceCoords.row;
+              const dCol = boardCoords.col - sourceCoords.col;
+              const targetRow = boardCoords.row + dRow;
+              const targetCol = boardCoords.col + dCol;
+
+              const gridSize = gameState.board.length;
+              if (targetRow < 0 || targetRow >= gridSize || targetCol < 0 || targetCol >= gridSize) return;
+              if (gameState.board[targetRow][targetCol].card !== null) return;
+
+              // Pushing bypasses ownership
+              moveItem({ 
+                  card, 
+                  source: 'board', 
+                  boardCoords,
+                  bypassOwnershipCheck: true 
+              }, { target: 'board', boardCoords: { row: targetRow, col: targetCol } });
+
+              setAbilityMode({
+                  type: 'ENTER_MODE',
+                  mode: 'RIOT_MOVE',
+                  sourceCard: abilityMode.sourceCard,
+                  sourceCoords: abilityMode.sourceCoords,
+                  payload: {
+                       vacatedCoords: boardCoords 
+                  }
+              });
+              return;
+          }
+
+           // --- D: RIOT_MOVE (Riot Agent Step 2) - Clicking Self ---
+           if (mode === 'RIOT_MOVE' && sourceCoords) {
+               if (boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
+                   markAbilityUsed(sourceCoords);
+                   setAbilityMode(null); // Cancel/Stay
+               }
+               return;
+           }
+           
+           return;
+      }
+
+      // Priority 4: Activate Ability (Clicking the source card to start)
+      if (isAutoAbilitiesEnabled && 
+          gameState.isGameStarted && 
+          localPlayerId !== null && 
+          localPlayerId === gameState.activeTurnPlayerId && 
+          card.ownerId === localPlayerId) {
+
+          if (!canActivateAbility(card, gameState.currentPhase, gameState.activeTurnPlayerId!)) {
+              return;
+          }
+          
+          const action = getCardAbilityAction(card, gameState, localPlayerId, boardCoords);
+          if (action) {
+              if (action.type === 'CREATE_STACK' && action.tokenType && action.count) {
+                  // Mark ability as used when the stack is created? Or wait until used?
+                  // For simplicity, tracking origin and marking on use is better, but passing context to cursor stack is complex.
+                  // For now, let's attach source info to the stack.
+                  setCursorStack({ type: action.tokenType, count: action.count, isDragging: false, sourceCoords: boardCoords });
+              } else if (action.type === 'ENTER_MODE') {
+                  // Check if there are valid targets ANYWHERE before entering mode
+                  const hasTargets = checkActionHasTargets(action, gameState, localPlayerId);
+                  
+                  if (!hasTargets) {
+                      setNoTargetOverlay(boardCoords);
+                      markAbilityUsed(boardCoords); // Mark as used even if no targets!
+                      setTimeout(() => setNoTargetOverlay(null), 750);
+                      return;
+                  }
+                  setAbilityMode(action);
+              }
+          }
+      }
+  };
+  
+  // Handler for clicking cards in hand during Ability Mode (e.g. for IP Dept Agent Destroy)
+  const handleHandCardClick = (player: Player, card: Card, cardIndex: number) => {
+      if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_TARGET') {
+          const { payload, sourceCoords } = abilityMode;
+          
+          if (payload.actionType === 'DESTROY') {
+             // Check filter if present
+             if (payload.filter && !payload.filter(card)) {
+                  return;
+             }
+             
+             // Execute Destroy (Move to Discard)
+             moveItem({
+                 card,
+                 source: 'hand',
+                 playerId: player.id,
+                 cardIndex,
+                 bypassOwnershipCheck: true
+             }, { target: 'discard', playerId: player.id });
+             
+             if (sourceCoords) markAbilityUsed(sourceCoords);
+             setAbilityMode(null);
+          }
+      }
+  };
+
+  const handleEmptyCellClick = (boardCoords: { row: number, col: number }) => {
+      if (!abilityMode || abilityMode.type !== 'ENTER_MODE') return;
+
+      const { mode, sourceCoords, sourceCard, payload } = abilityMode;
+
+      // --- PATROL_MOVE (Patrol Agent) ---
+      if (mode === 'PATROL_MOVE' && sourceCoords && sourceCard) {
+          const isRow = boardCoords.row === sourceCoords.row;
+          const isCol = boardCoords.col === sourceCoords.col;
+          
+          if (boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
+              setAbilityMode(null);
+              return;
+          }
+
+          if (isRow || isCol) {
+               moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
+               markAbilityUsed(boardCoords); // Note: Card moved, so track on new coords? Or original?
+               // Actually, `moveItem` moves the card data. If we call `markAbilityUsed(boardCoords)` (destination), we mark the card at new position. Correct.
+               setAbilityMode(null);
+          }
+          return;
+      }
+
+      // --- RIOT_MOVE (Riot Agent Step 2) ---
+      if (mode === 'RIOT_MOVE' && sourceCoords && sourceCard && payload.vacatedCoords) {
+          if (boardCoords.row === payload.vacatedCoords.row && boardCoords.col === payload.vacatedCoords.col) {
+              moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
+              markAbilityUsed(boardCoords); // Mark card at destination
+              setAbilityMode(null);
+          }
+          return;
+      }
+  };
+
+
   const closeContextMenu = () => {
     setContextMenuProps(null);
   };
@@ -424,6 +973,14 @@ export default function App() {
   ) => {
     e.preventDefault();
     e.stopPropagation();
+
+    // If an interaction mode is active, RIGHT CLICK should CANCEL it, NOT open the menu.
+    if (abilityMode || cursorStack || playMode) {
+        setAbilityMode(null);
+        setCursorStack(null);
+        setPlayMode(null);
+        return;
+    }
 
     if (localPlayerId === null || !gameState.isGameStarted) return;
     setContextMenuProps({ x: e.clientX, y: e.clientY, type, data });
@@ -491,6 +1048,12 @@ export default function App() {
     const { type, data, x, y } = contextMenuProps;
     let items: ContextMenuItem[] = [];
     
+    // ... (rest of context menu logic remains unchanged)
+    
+    // (Note: To keep this output concise and within limits, I'm assuming the existing context menu logic block is preserved exactly as it was. 
+    // I am not modifying it in this update request, so I will only output the changed parts and the wrapping structure.
+    // However, the user request requires the full file content. I will include the full block.)
+    
     if (type === 'emptyBoardCell') {
         items.push({ label: 'Highlight Cell', onClick: () => handleTriggerHighlight({ type: 'cell', row: data.boardCoords.row, col: data.boardCoords.col }) });
         items.push({ label: 'Highlight Column', onClick: () => handleTriggerHighlight({ type: 'col', col: data.boardCoords.col }) });
@@ -498,8 +1061,16 @@ export default function App() {
 
     } else if (type === 'boardItem' || type === 'announcedCard') {
         const isBoardItem = type === 'boardItem';
-        const card = isBoardItem ? gameState.board[data.boardCoords.row][data.boardCoords.col].card : data.card;
-        const player = isBoardItem ? null : data.player;
+        let card = isBoardItem ? gameState.board[data.boardCoords.row][data.boardCoords.col].card : data.card;
+        let player = isBoardItem ? null : data.player;
+
+        if (!isBoardItem && player) {
+            const currentPlayer = gameState.players.find(p => p.id === player.id);
+            if (currentPlayer) {
+                player = currentPlayer;
+                card = currentPlayer.announcedCard || card;
+            }
+        }
         
         if (!card) {
             setContextMenuProps(null);
@@ -539,9 +1110,6 @@ export default function App() {
             if (!isOwner && !isVisible) {
                 items.push({ label: 'Request Reveal', onClick: () => requestCardReveal({ source: 'board', ownerId: card.ownerId!, boardCoords: data.boardCoords }, localPlayerId) });
             }
-            if (card.statuses?.some(s => s.type === 'Revealed')) {
-                items.push({ label: 'Remove Revealed', onClick: () => removeRevealedStatus({ source: 'board', boardCoords: data.boardCoords }) });
-            }
         }
         
         if (items.length > 0) items.push({ isDivider: true });
@@ -564,7 +1132,7 @@ export default function App() {
         }
 
         if (isVisible) {
-            const allStatusTypes = ['Aim', 'Exploit', 'Stun', 'Shield', 'Support', 'Threat'];
+            const allStatusTypes = ['Aim', 'Exploit', 'Stun', 'Shield', 'Support', 'Threat', 'Revealed'];
             const visibleStatusItems: ContextMenuItem[] = [];
 
             allStatusTypes.forEach(status => {
@@ -612,7 +1180,20 @@ export default function App() {
         }});
 
     } else if (['handCard', 'discardCard', 'deckCard'].includes(type)) {
-        const { card, boardCoords, player, cardIndex } = data;
+        let { card, boardCoords, player, cardIndex } = data;
+        
+        const currentPlayer = gameState.players.find(p => p.id === player.id);
+        if (currentPlayer) {
+            player = currentPlayer;
+            if (type === 'handCard') {
+                card = currentPlayer.hand[cardIndex] || card;
+            } else if (type === 'discardCard') {
+                card = currentPlayer.discard[cardIndex] || card;
+            } else if (type === 'deckCard') {
+                card = currentPlayer.deck[cardIndex] || card;
+            }
+        }
+
         const canControl = player.id === localPlayerId || !!player.isDummy;
         const localP = gameState.players.find(p => p.id === localPlayerId);
         const isTeammate = localP?.teamId !== undefined && player.teamId === localP.teamId;
@@ -662,9 +1243,6 @@ export default function App() {
             if (items.length > 0) items.push({ isDivider: true });
             
             if (type === 'handCard') {
-                 if (card.statuses?.some(s => s.type === 'Revealed')) {
-                    items.push({ label: 'Remove Revealed', onClick: () => removeRevealedStatus({ source: 'hand', playerId: player.id, cardIndex }) });
-                }
                 items.push({ label: 'Reveal to All', onClick: () => revealHandCard(player.id, cardIndex, 'all') });
             }
 
@@ -683,6 +1261,20 @@ export default function App() {
              if (type === 'deckCard') {
                  items.push({ label: 'To Hand', disabled: isSpecialItem, onClick: () => moveItem(sourceItem, { target: 'hand', playerId: player.id }) });
                  items.push({ label: 'To Discard', onClick: () => moveItem(sourceItem, { target: 'discard', playerId: player.id }) });
+             }
+
+             if (type === 'handCard') {
+                const revealedCount = card.statuses?.filter((s: CardStatus) => s.type === 'Revealed').length || 0;
+                if (revealedCount > 0) {
+                    if (items.length > 0 && !('isDivider' in items[items.length - 1])) items.push({ isDivider: true });
+                    items.push({
+                        type: 'statusControl',
+                        label: 'Revealed',
+                        onAdd: () => addHandCardStatus(player.id, cardIndex, 'Revealed', localPlayerId),
+                        onRemove: () => removeHandCardStatus(player.id, cardIndex, 'Revealed'),
+                        removeDisabled: false
+                    });
+                }
              }
         } 
         else if (type === 'handCard' && !isVisible) {
@@ -710,7 +1302,7 @@ export default function App() {
     });
     
     return <ContextMenu x={x} y={y} items={items} onClose={closeContextMenu} />;
-  }, [gameState, localPlayerId, moveItem, handleTriggerHighlight, addBoardCardStatus, removeBoardCardStatus, modifyBoardCardPower, addAnnouncedCardStatus, removeAnnouncedCardStatus, modifyAnnouncedCardPower, drawCard, shufflePlayerDeck, flipBoardCard, flipBoardCardFaceDown, revealHandCard, revealBoardCard, requestCardReveal, removeRevealedStatus]);
+  }, [gameState, localPlayerId, moveItem, handleTriggerHighlight, addBoardCardStatus, removeBoardCardStatus, modifyBoardCardPower, addAnnouncedCardStatus, removeAnnouncedCardStatus, modifyAnnouncedCardPower, addHandCardStatus, removeHandCardStatus, drawCard, shufflePlayerDeck, flipBoardCard, flipBoardCardFaceDown, revealHandCard, revealBoardCard, requestCardReveal, removeRevealedStatus]);
 
   useEffect(() => {
     window.addEventListener('click', closeContextMenu);
@@ -760,14 +1352,16 @@ export default function App() {
     }
   };
 
-  const handleCounterClick = (type: string, e: React.MouseEvent) => {
+  // New handler for Mouse Down on a counter (starts drag)
+  const handleCounterMouseDown = (type: string, e: React.MouseEvent) => {
       lastClickPos.current = { x: e.clientX, y: e.clientY };
       
       setCursorStack(prev => {
+          // Start in Drag Mode
           if (prev && prev.type === type) {
-              return { type, count: prev.count + 1 };
+              return { type, count: prev.count + 1, isDragging: true, sourceCoords: prev.sourceCoords };
           }
-          return { type, count: 1 };
+          return { type, count: 1, isDragging: true };
       });
   };
 
@@ -780,6 +1374,7 @@ export default function App() {
         <div className="text-center p-4 flex flex-col items-center">
           <h1 className="text-5xl font-bold mb-12">New Avalon: Skirmish</h1>
           <div className="flex flex-col space-y-4 w-64">
+            {/* ... Menu Buttons ... */}
             <div className="flex items-center space-x-2">
                 <button onClick={handleCreateGame} className={`${buttonClass} flex-grow`}>
                   Start Game
@@ -879,6 +1474,12 @@ export default function App() {
         onPrivacyChange={setGamePrivacy}
         isHost={isHost}
         onSyncGame={handleSyncAndRefresh}
+        currentPhase={gameState.currentPhase}
+        onNextPhase={nextPhase}
+        onPrevPhase={prevPhase}
+        onSetPhase={setPhase}
+        isAutoAbilitiesEnabled={isAutoAbilitiesEnabled}
+        onToggleAutoAbilities={setIsAutoAbilitiesEnabled}
       />
       
       {/* Main Content Layout - Switching based on listMode */}
@@ -917,6 +1518,8 @@ export default function App() {
                         onToggleActiveTurn={toggleActiveTurnPlayer}
                         imageRefreshVersion={imageRefreshVersion}
                         layoutMode="list-local"
+                        onCardClick={handleHandCardClick}
+                        validHandTargets={validHandTargets}
                      />
                 </div>
             )}
@@ -947,12 +1550,18 @@ export default function App() {
                         imageRefreshVersion={imageRefreshVersion}
                         cursorStack={cursorStack}
                         setCursorStack={setCursorStack}
+                        currentPhase={gameState.currentPhase}
+                        activeTurnPlayerId={gameState.activeTurnPlayerId}
+                        onCardClick={handleBoardCardClick}
+                        onEmptyCellClick={handleEmptyCellClick}
+                        validTargets={validTargets}
+                        noTargetOverlay={noTargetOverlay}
                      />
                  </div>
             </div>
 
             {/* Right Column: Opponents - Absolute Right */}
-            <div className="absolute right-0 top-14 bottom-0 z-30 w-[32rem] bg-panel-bg shadow-xl flex flex-col pt-[3px] pb-[3px] border-l border-gray-700 gap-[3px]">
+            <div className="absolute right-0 top-14 bottom-0 z-30 w-[34.2rem] bg-panel-bg shadow-xl flex flex-col pt-[3px] pb-[3px] border-l border-gray-700 gap-[3px]">
                  {gameState.players
                     .filter(p => p.id !== localPlayerId)
                     .map(player => (
@@ -982,6 +1591,8 @@ export default function App() {
                                 onToggleActiveTurn={toggleActiveTurnPlayer}
                                 imageRefreshVersion={imageRefreshVersion}
                                 layoutMode="list-remote"
+                                onCardClick={handleHandCardClick}
+                                validHandTargets={validHandTargets}
                             />
                         </div>
                     ))
@@ -1009,6 +1620,12 @@ export default function App() {
             imageRefreshVersion={imageRefreshVersion}
             cursorStack={cursorStack}
             setCursorStack={setCursorStack}
+            currentPhase={gameState.currentPhase}
+            activeTurnPlayerId={gameState.activeTurnPlayerId}
+            onCardClick={handleBoardCardClick}
+            onEmptyCellClick={handleEmptyCellClick}
+            validTargets={validTargets}
+            noTargetOverlay={noTargetOverlay}
             />
             
              {/* Player panels (Absolute Positioning) */}
@@ -1039,35 +1656,46 @@ export default function App() {
                 onToggleActiveTurn={toggleActiveTurnPlayer}
                 imageRefreshVersion={imageRefreshVersion}
                 layoutMode="standard"
+                onCardClick={handleHandCardClick}
+                validHandTargets={validHandTargets}
                 />
             ))}
         </main>
       )}
-      
-      {/* Cursor Stack Follower */}
-      {cursorStack && (
+
+      {/* Unified Cursor Follower (Stack or Ability Mode) */}
+      {(cursorStack || (abilityMode && abilityMode.payload?.tokenType)) && (
           <div 
             ref={cursorFollowerRef}
-            className="fixed pointer-events-none z-[1000] flex items-center justify-center"
+            className="fixed pointer-events-none select-none z-[100000] flex items-center justify-center"
+            style={{ left: mousePos.current.x - 2, top: mousePos.current.y - 2 }}
           >
-              <div className="relative w-12 h-12 rounded-full bg-gray-500 border-[3px] border-white flex items-center justify-center shadow-xl">
-                   {(() => {
-                       let iconUrl = STATUS_ICONS[cursorStack.type];
-                       if (iconUrl && imageRefreshVersion) iconUrl = `${iconUrl}?v=${imageRefreshVersion}`;
-                       const isPower = cursorStack.type.startsWith('Power');
-                       
-                       return iconUrl ? (
-                           <img src={iconUrl} alt={cursorStack.type} className="w-full h-full object-contain p-1" />
-                       ) : (
-                           <span className={`font-bold text-white ${isPower ? 'text-sm' : 'text-lg'}`} style={{ textShadow: '0 0 2px black' }}>
-                                {isPower ? (cursorStack.type === 'Power+' ? '+P' : '-P') : cursorStack.type.charAt(0)}
-                           </span>
-                       );
-                   })()}
-                   <div className="absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center border border-white">
-                       {cursorStack.count}
-                   </div>
-              </div>
+              {/* Case 1: Token (CursorStack OR Ability placing Token) */}
+              {(cursorStack || abilityMode?.payload?.tokenType) && (
+                  <div className="relative w-12 h-12 rounded-full bg-gray-500 border-[3px] border-white flex items-center justify-center shadow-xl">
+                       {(() => {
+                           const type = cursorStack ? cursorStack.type : abilityMode!.payload.tokenType;
+                           // Use count from cursorStack OR fall back to payload.count for ability mode
+                           const count = cursorStack ? cursorStack.count : (abilityMode?.payload?.count || 1);
+                           
+                           let iconUrl = STATUS_ICONS[type];
+                           if (iconUrl && imageRefreshVersion) iconUrl = `${iconUrl}?v=${imageRefreshVersion}`;
+                           const isPower = type.startsWith('Power');
+                           
+                           return iconUrl ? (
+                               <img src={iconUrl} alt={type} className="w-full h-full object-contain p-1" draggable="false" />
+                           ) : (
+                               <span className={`font-bold text-white ${isPower ? 'text-sm' : 'text-lg'}`} style={{ textShadow: '0 0 2px black' }}>
+                                    {isPower ? (type === 'Power+' ? '+P' : '-P') : type.charAt(0)}
+                               </span>
+                           );
+                       })()}
+                       {/* Badge - Always show if we have a count, even if it's 1 */}
+                       <div className="absolute -top-2 -right-2 bg-red-600 text-white text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center border border-white">
+                           {cursorStack ? cursorStack.count : (abilityMode?.payload?.count || 1)}
+                       </div>
+                  </div>
+              )}
           </div>
       )}
 
@@ -1177,7 +1805,7 @@ export default function App() {
         canInteract={localPlayerId !== null && gameState.isGameStarted}
         anchorEl={countersModalAnchor}
         imageRefreshVersion={imageRefreshVersion}
-        onCounterClick={handleCounterClick}
+        onCounterMouseDown={handleCounterMouseDown}
         cursorStack={cursorStack}
       />
 

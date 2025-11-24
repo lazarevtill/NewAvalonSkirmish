@@ -6,6 +6,7 @@ import React from 'react';
 import type { GridSize, GameMode } from '../types';
 import { GameMode as GameModeEnum } from '../types';
 import type { ConnectionStatus } from '../hooks/useGameState';
+import { TURN_PHASES } from '../constants';
 
 const MAX_PLAYERS = 4;
 
@@ -32,6 +33,12 @@ interface HeaderProps {
   onPrivacyChange: (isPrivate: boolean) => void;
   isHost: boolean;
   onSyncGame: () => void;
+  currentPhase: number;
+  onNextPhase: () => void;
+  onPrevPhase: () => void;
+  onSetPhase: (index: number) => void;
+  isAutoAbilitiesEnabled: boolean;
+  onToggleAutoAbilities: (enabled: boolean) => void;
 }
 
 /**
@@ -59,6 +66,12 @@ export const Header: React.FC<HeaderProps> = ({
   onPrivacyChange,
   isHost,
   onSyncGame,
+  currentPhase,
+  onNextPhase,
+  onPrevPhase,
+  onSetPhase,
+  isAutoAbilitiesEnabled,
+  onToggleAutoAbilities,
 }) => {
   const dummyOptions = [0, 1, 2, 3];
 
@@ -88,16 +101,16 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="fixed top-0 left-0 right-0 h-14 bg-panel-bg bg-opacity-80 backdrop-blur-sm z-50 flex items-center justify-between px-4 shadow-lg">
       <div className="flex items-center space-x-4">
-        <h1 className="text-xl font-bold text-indigo-400">New Avalon: Skirmish</h1>
+        <h1 className="text-xl font-bold text-indigo-400 hidden lg:block">New Avalon</h1>
         <StatusIndicator />
         <div className="flex items-center space-x-3">
           {gameId && (
             <div className="flex items-center space-x-2">
-               <span className="text-sm text-gray-400">Game ID:</span>
-               <span className="font-mono bg-gray-700 px-2 py-1 rounded text-indigo-300 w-44 text-center">{gameId}</span>
+               <span className="text-sm text-gray-400 hidden md:inline">ID:</span>
+               <span className="font-mono bg-gray-700 px-2 py-1 rounded text-indigo-300 w-24 md:w-44 text-center truncate">{gameId}</span>
             </div>
           )}
-          <label className="flex items-center space-x-1.5 cursor-pointer" title="Hidden games do not appear in the 'Join Game' list.">
+          <label className="flex items-center space-x-1.5 cursor-pointer hidden md:flex" title="Hidden games do not appear in the 'Join Game' list.">
               <input 
                   type="checkbox"
                   checked={isPrivate}
@@ -107,27 +120,76 @@ export const Header: React.FC<HeaderProps> = ({
               />
               <span className="text-sm text-gray-300">Hidden</span>
           </label>
-          <span className="text-gray-600">|</span>
+          <span className="text-gray-600 hidden md:inline">|</span>
           <button
             onClick={onOpenTokensModal}
-            className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded text-sm"
+            className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-3 rounded text-sm"
           >
             Tokens
           </button>
           <button
             onClick={onOpenCountersModal}
-            className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded text-sm"
+            className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-3 rounded text-sm"
           >
             Counters
           </button>
         </div>
       </div>
+
+      {/* Phase Tracker (Center) */}
+      {isGameStarted && (
+        <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center bg-gray-800 rounded-lg p-1 border border-gray-700 shadow-md">
+             <button 
+                onClick={onPrevPhase} 
+                className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                title="Previous Phase"
+             >
+                 {/* Custom wider left triangle */}
+                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M15 6 L8 12 L15 18 Z" />
+                 </svg>
+             </button>
+             <select 
+                value={currentPhase}
+                onChange={(e) => onSetPhase(parseInt(e.target.value))}
+                className="bg-gray-800 text-white font-bold text-sm text-center border-none focus:ring-0 cursor-pointer appearance-none px-2 min-w-[120px]"
+             >
+                 {TURN_PHASES.map((phase, index) => (
+                     <option key={index} value={index}>{phase}</option>
+                 ))}
+             </select>
+             <button 
+                onClick={onNextPhase} 
+                className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-gray-700 rounded transition-colors"
+                title="Next Phase"
+             >
+                 {/* Custom wider right triangle */}
+                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                     <path d="M9 6 L16 12 L9 18 Z" />
+                 </svg>
+             </button>
+        </div>
+      )}
+
       <div className="flex items-center space-x-3">
+        {/* Auto-Abilities Toggle */}
+        {isGameStarted && (
+           <label className="flex items-center space-x-1.5 cursor-pointer bg-gray-800 px-2 py-1 rounded border border-gray-600" title="Automatically attach counters/tokens when clicking your cards.">
+              <input 
+                  type="checkbox"
+                  checked={isAutoAbilitiesEnabled}
+                  onChange={(e) => onToggleAutoAbilities(e.target.checked)}
+                  className="w-4 h-4 text-indigo-600 bg-gray-700 border-gray-600 rounded focus:ring-indigo-500"
+              />
+              <span className="text-sm text-gray-300">Auto-Ability</span>
+          </label>
+        )}
+
         {isGameStarted ? (
           isHost && (
             <button
               onClick={onResetGame}
-              className="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded text-sm"
+              className="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded text-sm hidden md:block"
             >
               New Game
             </button>
@@ -141,7 +203,7 @@ export const Header: React.FC<HeaderProps> = ({
             Start Game
           </button>
         )}
-         <div className="flex items-center space-x-2">
+         <div className="flex items-center space-x-2 hidden lg:flex">
           <label htmlFor="game-mode" className="text-sm font-medium text-gray-300">
             Mode:
           </label>
@@ -152,14 +214,14 @@ export const Header: React.FC<HeaderProps> = ({
             disabled={isGameStarted || !isHost}
             className="bg-gray-700 border border-gray-600 text-white text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block w-full p-2 disabled:opacity-70 disabled:cursor-not-allowed"
           >
-            <option value={GameModeEnum.FreeForAll}>Free For All</option>
-            <option value={GameModeEnum.TwoVTwo}>2 vs 2</option>
-            <option value={GameModeEnum.ThreeVOne}>3 vs 1</option>
+            <option value={GameModeEnum.FreeForAll}>FFA</option>
+            <option value={GameModeEnum.TwoVTwo}>2v2</option>
+            <option value={GameModeEnum.ThreeVOne}>3v1</option>
           </select>
         </div>
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 hidden xl:flex">
           <label htmlFor="grid-size" className="text-sm font-medium text-gray-300">
-            Board Size:
+            Size:
           </label>
           <select
             id="grid-size"
@@ -174,7 +236,7 @@ export const Header: React.FC<HeaderProps> = ({
             <option value="7">7x7</option>
           </select>
         </div>
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 hidden xl:flex">
           <label htmlFor="dummy-players" className="text-sm font-medium text-gray-300">
             Dummies:
           </label>
@@ -213,7 +275,7 @@ export const Header: React.FC<HeaderProps> = ({
             className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded text-sm"
             title="Return to Main Menu"
             >
-            Exit Game
+            Exit
             </button>
         </div>
       </div>

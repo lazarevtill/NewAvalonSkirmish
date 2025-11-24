@@ -19,7 +19,7 @@ interface CountersModalProps {
   canInteract: boolean;
   anchorEl: { top: number; left: number } | null;
   imageRefreshVersion?: number;
-  onCounterClick: (type: string, e: React.MouseEvent) => void;
+  onCounterMouseDown: (type: string, e: React.MouseEvent) => void;
   cursorStack: { type: string; count: number } | null;
 }
 
@@ -29,7 +29,7 @@ interface CountersModalProps {
  * @param {CountersModalProps} props The properties for the component.
  * @returns {React.ReactElement | null} The rendered modal or null if not open.
  */
-export const CountersModal: React.FC<CountersModalProps> = ({ isOpen, onClose, setDraggedItem, canInteract, anchorEl, imageRefreshVersion, onCounterClick, cursorStack }) => {
+export const CountersModal: React.FC<CountersModalProps> = ({ isOpen, onClose, setDraggedItem, canInteract, anchorEl, imageRefreshVersion, onCounterMouseDown, cursorStack }) => {
   // State to hold the card object constructed for the tooltip
   const [tooltipCard, setTooltipCard] = useState<CardType | null>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
@@ -72,6 +72,10 @@ export const CountersModal: React.FC<CountersModalProps> = ({ isOpen, onClose, s
           
           setTooltipCard(dummyCard);
           setTooltipPos({ x: e.clientX, y: e.clientY });
+      } else if (e.button === 0) { // Left click
+          if (canInteract) {
+              onCounterMouseDown(type, e);
+          }
       }
   };
 
@@ -105,37 +109,23 @@ export const CountersModal: React.FC<CountersModalProps> = ({ isOpen, onClose, s
       }
   };
 
-  const handleDragStart = (e: React.DragEvent, type: string, label: string, isPower: boolean) => {
-      if (!canInteract) return;
-      
-      // Essential for drag image to work reliably across browsers:
-      // Set effectAllowed and setData to ensure the browser treats this as a valid drag operation.
-      e.dataTransfer.effectAllowed = 'copyMove';
-      e.dataTransfer.setData('text/plain', `counter:${type}`);
-      
-      // Set drag data
-      setDraggedItem({
-        card: { id: `CTR_${type}`, deck: 'counter', name: label, imageUrl: '', fallbackImage: '', power: 0, ability: '' }, // Dummy card
-        source: 'counter_panel',
-        statusType: type,
-        count: 1
-      });
-  };
-
   return (
     <>
       <div 
         style={modalStyle} 
-        className="pointer-events-auto"
+        className="pointer-events-auto counter-modal-content"
         onMouseLeave={handleMouseLeave}
         onDragLeave={handleDragLeave}
       >
         <div className="bg-gray-800 rounded-lg p-4 shadow-xl w-80 max-w-[90vw] h-auto flex flex-col" onClick={e => e.stopPropagation()}>
-           <div className="flex justify-between items-center mb-2">
-              <h2 className="text-xl font-bold">Counters</h2>
-              <button onClick={onClose} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1 px-3 rounded text-sm">
-                  Close
-              </button>
+           <div className="mb-2">
+              <div className="flex justify-between items-center">
+                <h2 className="text-xl font-bold">Counters</h2>
+                <button onClick={onClose} className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1 px-3 rounded text-sm">
+                    Close
+                </button>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">Hold right click to view hints</p>
           </div>
           <div className="bg-gray-900 rounded p-4">
             <div className="grid grid-cols-4 gap-1">
@@ -144,17 +134,13 @@ export const CountersModal: React.FC<CountersModalProps> = ({ isOpen, onClose, s
                 const isPower = counter.type.startsWith('Power');
 
                 return (
-                  <div
+                  <button
                     key={counter.type}
-                    draggable={canInteract}
-                    onDragStart={(e) => handleDragStart(e, counter.type, counter.label, isPower)}
-                    onClick={(e) => canInteract && onCounterClick(counter.type, e)}
                     onContextMenu={(e) => e.preventDefault()}
                     onMouseDown={(e) => handleMouseDown(e, counter.type, counter.label)}
                     onMouseUp={handleMouseUp}
                     onMouseMove={handleMouseMove}
-                    onDragEnd={() => setDraggedItem(null)}
-                    className={`w-12 h-12 rounded-full border-white flex items-center justify-center shadow-lg mx-auto relative ${canInteract ? 'cursor-pointer hover:ring-2 ring-indigo-400' : 'cursor-not-allowed'}`}
+                    className={`w-12 h-12 rounded-full border-white flex items-center justify-center shadow-lg mx-auto relative select-none ${canInteract ? 'cursor-pointer hover:ring-2 ring-indigo-400' : 'cursor-not-allowed'}`}
                     style={{ 
                         backgroundImage: `url(${COUNTER_BG_URL})`, 
                         backgroundSize: 'contain', 
@@ -169,7 +155,7 @@ export const CountersModal: React.FC<CountersModalProps> = ({ isOpen, onClose, s
                               {isPower ? counter.label : counter.type.charAt(0)}
                           </span>
                      )}
-                  </div>
+                  </button>
                 );
               })}
             </div>

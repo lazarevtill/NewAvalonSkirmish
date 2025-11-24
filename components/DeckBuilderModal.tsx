@@ -1,4 +1,3 @@
-
 /**
  * @file Renders a modal for creating and editing custom decks.
  */
@@ -135,24 +134,41 @@ export const DeckBuilderModal: React.FC<DeckBuilderModalProps> = ({ isOpen, onCl
   }, [deckCards]);
 
   const findFactionForCard = useCallback((cardId: string): DeckType => {
+      const cardDef = getCardDefinition(cardId);
+      if (cardDef && cardDef.faction && Object.values(DeckType).includes(cardDef.faction as DeckType)) {
+          return cardDef.faction as DeckType;
+      }
+      // Fallback for command cards or if faction missing (though should be there now)
       if (commandCardIds.has(cardId)) {
           return DeckType.Command;
       }
-      const foundDeck = deckFiles.find(df => df.cards.some(c => c.cardId === cardId));
-      return foundDeck ? foundDeck.id : DeckType.Custom;
+      return DeckType.Custom;
   }, []);
 
   const filteredLibraryCards = useMemo(() => {
     return allCards.filter(({ id, card }) => {
+      // Visibility Filter: Check if card is allowed in Deck Builder
+      // If allowedPanels is undefined, we assume it's visible for backward compatibility with older data, 
+      // but strictly we should check. Given the update, standard cards have "DECK_BUILDER".
+      if (card.allowedPanels && !card.allowedPanels.includes('DECK_BUILDER')) {
+          return false;
+      }
+
       // Faction filter
       if (factionFilter === 'command') {
           if (!commandCardIds.has(id)) return false;
       }
       else if (factionFilter !== 'all') {
-        const cardDeckFile = selectableFactions.find(f => f.cards.some(c => c.cardId === id));
-        if (!cardDeckFile || cardDeckFile.id !== factionFilter) {
-          return false;
-        }
+         // Use the explicit faction property if available, otherwise check deck lists
+         if (card.faction) {
+             if (card.faction !== factionFilter) return false;
+         } else {
+             // Fallback to deck file check
+            const cardDeckFile = selectableFactions.find(f => f.cards.some(c => c.cardId === id));
+            if (!cardDeckFile || cardDeckFile.id !== factionFilter) {
+              return false;
+            }
+         }
       }
       // Power filter
       if (powerFilter.trim()) {

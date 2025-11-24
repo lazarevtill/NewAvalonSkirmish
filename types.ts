@@ -32,7 +32,7 @@ export type SpecialItemType = 'counter';
 /**
  * Defines the available player colors.
  */
-export type PlayerColor = 'blue' | 'cyan' | 'red' | 'orange' | 'green' | 'purple' | 'pink' | 'yellow';
+export type PlayerColor = 'blue' | 'purple' | 'red' | 'green' | 'yellow' | 'orange' | 'pink' | 'brown';
 
 /**
  * Represents a single status effect applied to a card.
@@ -40,6 +40,19 @@ export type PlayerColor = 'blue' | 'cyan' | 'red' | 'orange' | 'green' | 'purple
 export interface CardStatus {
   type: string;
   addedByPlayerId: number;
+}
+
+/**
+ * Represents the definition of a counter/status in the database.
+ */
+export interface CounterDefinition {
+    id: string;
+    name: string; // Display name
+    imageUrl: string;
+    description: string;
+    sortOrder: number;
+    allowedPanels?: string[]; // Controls visibility in UI panels (e.g. 'COUNTER_PANEL')
+    allowedTargets?: ('board' | 'hand' | 'deck' | 'discard' | 'announced')[]; // Controls where this counter can be placed
 }
 
 
@@ -63,6 +76,10 @@ export interface Card {
   isFaceDown?: boolean; // True if the card is played face-down on the board.
   revealedTo?: 'all' | number[]; // Defines who can see this card when it's in hand or face-down.
   types?: string[]; // The types associated with the card (e.g. ["Unit", "SynchroTech"], ["Command"]).
+  faction?: string; // The faction this card belongs to (for deck building colors).
+  allowedPanels?: string[]; // Controls visibility in UI panels (e.g. 'DECK_BUILDER', 'TOKEN_PANEL')
+  enteredThisTurn?: boolean; // True if the card entered the battlefield during the current turn
+  abilityUsedInPhase?: number; // Stores the phase index where the ability was last used
 }
 
 /**
@@ -147,6 +164,7 @@ export interface GameState {
   isReadyCheckActive: boolean;
   revealRequests: RevealRequest[];
   activeTurnPlayerId?: number;
+  currentPhase: number; // 0 to 4 representing the index in TURN_PHASES
 }
 
 /**
@@ -160,6 +178,7 @@ export interface DragItem {
   cardIndex?: number; // Original index if dragged from an array (hand, discard, deck).
   statusType?: string; // For counters: the type of status (e.g., 'Aim', 'Power+')
   count?: number; // For counters: how many are being dragged/applied
+  bypassOwnershipCheck?: boolean; // If true, allows moving cards owned by others (e.g. Destroy effects)
 }
 
 /**
@@ -170,6 +189,7 @@ export interface DropTarget {
     playerId?: number; // The ID of the player who owns the target location.
     boardCoords?: { row: number; col: number }; // Target coordinates if dropping on the board.
     deckPosition?: 'top' | 'bottom'; // Target position if dropping on a deck.
+    cardIndex?: number; // Target index if dropping on a specific card in a list (e.g. hand).
 }
 
 /**

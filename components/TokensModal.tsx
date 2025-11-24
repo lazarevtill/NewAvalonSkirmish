@@ -31,7 +31,12 @@ interface TokensModalProps {
 export const TokensModal: React.FC<TokensModalProps> = ({ isOpen, onClose, setDraggedItem, openContextMenu, canInteract, anchorEl, imageRefreshVersion, draggedItem }) => {
   if (!isOpen || !anchorEl) return null;
 
-  const tokenCards = decksData[DeckType.Tokens] || [];
+  // Filter tokens based on visibility flags
+  const tokenCards = (decksData[DeckType.Tokens] || []).filter(token => {
+      // If allowedPanels is defined, check if TOKEN_PANEL is included.
+      // If undefined, assume visible for backward compatibility (or you can force a check).
+      return !token.allowedPanels || token.allowedPanels.includes('TOKEN_PANEL');
+  });
   
   const modalStyle: React.CSSProperties = {
     position: 'fixed',

@@ -4,6 +4,7 @@
 
 import type { Card, DeckType, PlayerColor } from './types';
 import { DeckType as DeckTypeEnum } from './types';
+import { countersDatabase } from './decks';
 
 /**
  * A mapping of deck types to their thematic properties, like color and ID prefix.
@@ -20,66 +21,57 @@ export const DECK_THEMES: { [key in DeckType]: { prefix: string, color: string }
 
 /**
  * Defines the available player colors and their corresponding Tailwind CSS classes.
+ * 'glow' provides an outer-glow box-shadow effect.
  */
-export const PLAYER_COLORS: { [key in PlayerColor]: { bg: string, border: string, outline: string } } = {
-  blue: { bg: 'bg-blue-500', border: 'border-blue-500', outline: 'outline-blue-500' },
-  cyan: { bg: 'bg-cyan-400', border: 'border-cyan-400', outline: 'outline-cyan-400' },
-  red: { bg: 'bg-red-500', border: 'border-red-500', outline: 'outline-red-500' },
-  orange: { bg: 'bg-orange-500', border: 'border-orange-500', outline: 'outline-orange-500' },
-  green: { bg: 'bg-green-500', border: 'border-green-500', outline: 'outline-green-500' },
-  purple: { bg: 'bg-purple-500', border: 'border-purple-500', outline: 'outline-purple-500' },
-  pink: { bg: 'bg-pink-400', border: 'border-pink-400', outline: 'outline-pink-400' },
-  yellow: { bg: 'bg-yellow-400', border: 'border-yellow-400', outline: 'outline-yellow-400' },
+export const PLAYER_COLORS: { [key in PlayerColor]: { bg: string, border: string, outline: string, glow: string } } = {
+  blue: { bg: 'bg-blue-600', border: 'border-blue-600', outline: 'outline-blue-600', glow: 'shadow-[0_0_15px_#2563eb]' },
+  purple: { bg: 'bg-purple-600', border: 'border-purple-600', outline: 'outline-purple-600', glow: 'shadow-[0_0_15px_#9333ea]' },
+  red: { bg: 'bg-red-600', border: 'border-red-600', outline: 'outline-red-600', glow: 'shadow-[0_0_15px_#dc2626]' },
+  green: { bg: 'bg-green-600', border: 'border-green-600', outline: 'outline-green-600', glow: 'shadow-[0_0_15px_#16a34a]' },
+  yellow: { bg: 'bg-yellow-500', border: 'border-yellow-500', outline: 'outline-yellow-500', glow: 'shadow-[0_0_15px_#eab308]' },
+  orange: { bg: 'bg-orange-500', border: 'border-orange-500', outline: 'outline-orange-500', glow: 'shadow-[0_0_15px_#f97316]' },
+  pink: { bg: 'bg-pink-500', border: 'border-pink-500', outline: 'outline-pink-500', glow: 'shadow-[0_0_15px_#ec4899]' },
+  brown: { bg: 'bg-[#8B4513]', border: 'border-[#8B4513]', outline: 'outline-[#8B4513]', glow: 'shadow-[0_0_15px_#8B4513]' },
 };
 
 /**
- * An array of all available player color names.
+ * An array of all available player color names in the specific UI order requested.
  */
-export const PLAYER_COLOR_NAMES = Object.keys(PLAYER_COLORS) as PlayerColor[];
+export const PLAYER_COLOR_NAMES: PlayerColor[] = ['blue', 'purple', 'red', 'green', 'yellow', 'orange', 'pink', 'brown'];
+
+/**
+ * The sequence of phases in a player's turn.
+ */
+export const TURN_PHASES = [
+    'Setup',
+    'Command Phase #1',
+    'Deploy',
+    'Command Phase #2',
+    'Commit'
+];
 
 /**
  * Image URLs for status icons.
  */
-export const STATUS_ICONS: Record<string, string> = {
-    'Aim': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478810/Aim_dcct45.png',
-    'Exploit': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478810/Exploit_foomty.png',
-    'LastPlayed': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478810/LastPlayed_bfkbwb.png',
-    'Revealed': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478811/Revealed_w1gbe7.png',
-    'Shield': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478810/Shield_z9sjr1.png',
-    'Stun': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478811/Stun_cwqroz.png',
-    'Support': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478809/Support_ui9qpl.png',
-    'Threat': 'https://res.cloudinary.com/dxxh6meej/image/upload/v1763478809/Threat_i1pbko.png',
-};
+export const STATUS_ICONS: Record<string, string> = Object.fromEntries(
+    Object.entries(countersDatabase).map(([key, def]) => [key, def.imageUrl])
+);
 
 /**
  * Descriptions for various status effects and counters.
  */
-export const STATUS_DESCRIPTIONS: Record<string, string> = {
-    'Aim': 'This counter has no effect on its own, but it can modify the abilities of cards. This card is easier to destroy.',
-    'Exploit': 'This counter has no effect on its own, but it can modify the abilities of cards. Hacker and Programmer cards will have a greater effect on this card.',
-    'LastPlayed': 'This card was last played by its owner.',
-    'Revealed': "This card's face is visible to the owner of the counter revealed.",
-    'Shield': 'If an effect attempts to destroy this card, remove 1 shield counter from it instead.',
-    'Stun': 'If this card attempts to gain points, move, use an interpath, or use an activated or triggered ability, remove 1 stun counter from it instead.',
-    'Support': 'This counter has no effect on its own, but it can modify the abilities of cards. This card is adjacent to its ally.',
-    'Threat': "This counter has no effect on its own, but it can modify the abilities of cards. This card is surrounded and pinned to the edge of the battlefield by an opponent's cards.",
-    'Power+': 'Increases the power of the card by 1.',
-    'Power-': 'Decreases the power of the card by 1.',
-};
+export const STATUS_DESCRIPTIONS: Record<string, string> = Object.fromEntries(
+    Object.entries(countersDatabase).map(([key, def]) => [key, def.description])
+);
 
 /**
- * Available counters for the Counters Modal.
+ * Available counters for the Counters Modal, sorted by sortOrder.
+ * Filters counters to only show those allowed in the COUNTER_PANEL.
  */
-export const AVAILABLE_COUNTERS = [
-    { type: 'Aim', label: 'Aim' },
-    { type: 'Exploit', label: 'Exploit' },
-    { type: 'Shield', label: 'Shield' },
-    { type: 'Stun', label: 'Stun' },
-    { type: 'Support', label: 'Support' },
-    { type: 'Threat', label: 'Threat' },
-    { type: 'Power+', label: '+P' },
-    { type: 'Power-', label: '-P' },
-];
+export const AVAILABLE_COUNTERS = Object.entries(countersDatabase)
+    .filter(([, def]) => !def.allowedPanels || def.allowedPanels.includes('COUNTER_PANEL'))
+    .sort(([, a], [, b]) => a.sortOrder - b.sortOrder)
+    .map(([key, def]) => ({ type: key, label: def.name }));
 
 /**
  * An array of predefined counter items that can be placed on cards.

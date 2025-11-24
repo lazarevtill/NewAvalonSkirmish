@@ -16,16 +16,19 @@ interface TeamAssignmentModalProps {
 /**
  * A draggable player item for the assignment list.
  */
-const PlayerPill: React.FC<{ player: Player; onDragStart: (e: React.DragEvent, playerId: number) => void }> = ({ player, onDragStart }) => (
-    <div
-        draggable
-        onDragStart={(e) => onDragStart(e, player.id)}
-        className="flex items-center gap-2 bg-gray-600 p-2 rounded-md cursor-grab active:cursor-grabbing"
-    >
-        <div className={`w-4 h-4 rounded-full ${PLAYER_COLORS[player.color].bg} border border-white/50`}></div>
-        <span className="font-medium">{player.name}</span>
-    </div>
-);
+const PlayerPill: React.FC<{ player: Player; onDragStart: (e: React.DragEvent, playerId: number) => void }> = ({ player, onDragStart }) => {
+    const colorData = PLAYER_COLORS[player.color] || PLAYER_COLORS['blue'];
+    return (
+        <div
+            draggable
+            onDragStart={(e) => onDragStart(e, player.id)}
+            className="flex items-center gap-2 bg-gray-600 p-2 rounded-md cursor-grab active:cursor-grabbing"
+        >
+            <div className={`w-4 h-4 rounded-full ${colorData.bg} border border-white/50`}></div>
+            <span className="font-medium">{player.name}</span>
+        </div>
+    );
+};
 
 /**
  * A drop zone for a team slot.

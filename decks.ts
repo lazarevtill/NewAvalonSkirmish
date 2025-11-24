@@ -4,14 +4,15 @@
  * for both the client and the server.
  */
 
-import type { Card } from './types';
+import type { Card, CounterDefinition } from './types';
 import { DeckType } from './types';
-import rawJsonData from './decks.json';
+import rawJsonDataImport from './decks.json';
 
 // --- Type assertion for the imported JSON data ---
 interface RawDecksJson {
   cardDatabase: Record<string, Omit<Card, 'id' | 'deck'>>;
   tokenDatabase: Record<string, Omit<Card, 'id' | 'deck'>>;
+  countersDatabase: Record<string, Omit<CounterDefinition, 'id'>>;
   deckFiles: {
     id: DeckType;
     name: string;
@@ -20,7 +21,10 @@ interface RawDecksJson {
   }[];
 }
 
-const { cardDatabase: rawCardDb, tokenDatabase: rawTokenDb, deckFiles: df } = rawJsonData as RawDecksJson;
+const { cardDatabase: rawCardDb, tokenDatabase: rawTokenDb, countersDatabase: rawCountersDb, deckFiles: df } = rawJsonDataImport as RawDecksJson;
+
+// Export raw data for server synchronization
+export const rawJsonData = rawJsonDataImport;
 
 // Base definition of a card, without instance-specific properties like id or deck.
 export type CardDefinition = Omit<Card, 'id' | 'deck'>;
@@ -32,6 +36,9 @@ export const cardDatabase = new Map<string, CardDefinition>(Object.entries(rawCa
 
 // A Map of all token definitions, keyed by tokenId.
 export const tokenDatabase = new Map<string, CardDefinition>(Object.entries(rawTokenDb));
+
+// A Map of all counter definitions.
+export const countersDatabase = rawCountersDb;
 
 // An array of deck file definitions, used for deck selection and building.
 export const deckFiles = df;
@@ -78,12 +85,14 @@ function buildDecksData(): DecksData {
                         ...cardDef,
                         deck: DeckType.Command,
                         id: `CMD_${cardKey}`,
+                        faction: cardDef.faction || 'Command',
                     });
                 } else {
                     deckCardList.push({
                         ...cardDef,
                         deck: deckFile.id,
                         id: `${deckFile.id.substring(0, 3).toUpperCase()}_${cardKey}_${i + 1}`,
+                        faction: cardDef.faction || deckFile.id,
                     });
                 }
             }
@@ -111,6 +120,7 @@ function buildDecksData(): DecksData {
              color: tokenDef.color,
              types: types,
              flavorText: tokenDef.flavorText,
+             faction: 'Tokens',
          };
     });
 
@@ -138,6 +148,15 @@ export const getSelectableDecks = () => {
  */
 export function getCardDefinition(cardId: string): CardDefinition | undefined {
     return cardDatabase.get(cardId);
+}
+
+/**
+ * Helper to find a card definition by its name (fuzzy match).
+ * @param {string} name The name of the card.
+ * @returns {CardDefinition | undefined}
+ */
+export function getCardDefinitionByName(name: string): CardDefinition | undefined {
+    return Array.from(cardDatabase.values()).find(c => c.name === name);
 }
 
 /**

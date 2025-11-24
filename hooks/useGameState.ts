@@ -6,8 +6,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { GameState, Player, Board, GridSize, Card, DragItem, DropTarget, PlayerColor, GameMode, RevealRequest, CardIdentifier, CustomDeckFile, HighlightData } from '../types';
 import { DeckType, GameMode as GameModeEnum } from '../types';
-import { shuffleDeck, PLAYER_COLOR_NAMES } from '../constants';
-import { decksData, getCardDefinition, commandCardIds, deckFiles } from '../decks'; // Import static deck data
+import { shuffleDeck, PLAYER_COLOR_NAMES, TURN_PHASES } from '../constants';
+import { decksData, getCardDefinition, commandCardIds, deckFiles, countersDatabase, rawJsonData, getCardDefinitionByName } from '../decks';
 
 const MAX_PLAYERS = 4;
 const GRID_MAX_SIZE = 7;
@@ -235,6 +235,7 @@ export const useGameState = () => {
     isReadyCheckActive: false,
     revealRequests: [],
     activeTurnPlayerId: undefined,
+    currentPhase: 0,
   }), []);
 
   const [gameState, setGameState] = useState<GameState>(createInitialState);
@@ -260,7 +261,7 @@ export const useGameState = () => {
 
 
   /**
-   * Updates the game state and broadcasts it to other players.
+   * Updates the game state and broadcast it to other players.
    * This is the primary function for all state mutations.
    * @param {GameState | ((prevState: GameState) => GameState)} newStateOrFn - The new state or a function that returns the new state.
    */
@@ -274,6 +275,19 @@ export const useGameState = () => {
     });
   }, []);
   
+  /**
+   * Pushes local deck definitions to the server to ensure all players use the Host's version.
+   */
+  const updateServerDecks = useCallback(() => {
+      if (ws.current?.readyState === WebSocket.OPEN && localPlayerIdRef.current === 1) {
+          console.log("Sending UPDATE_DECK_DATA to server...");
+          ws.current.send(JSON.stringify({
+              type: 'UPDATE_DECK_DATA',
+              deckData: rawJsonData
+          }));
+      }
+  }, []);
+
   /**
    * Establishes and manages the WebSocket connection, including event handlers and reconnection logic.
    */
@@ -302,6 +316,11 @@ export const useGameState = () => {
       if (currentGameState && currentGameState.gameId) {
         if (ws.current?.readyState === WebSocket.OPEN) {
             ws.current.send(JSON.stringify({ type: 'SUBSCRIBE', gameId: currentGameState.gameId }));
+            
+            // If we are Host, push definitions on reconnect too
+            if (localPlayerIdRef.current === 1) {
+                 ws.current.send(JSON.stringify({ type: 'UPDATE_DECK_DATA', deckData: rawJsonData }));
+            }
         }
       }
     };
@@ -326,6 +345,15 @@ export const useGameState = () => {
                 localStorage.removeItem('reconnection_data');
             }
             joiningGameIdRef.current = null;
+            
+            // If we joined as Host, update server definitions immediately
+            if (data.playerId === 1) {
+                setTimeout(() => {
+                     if (ws.current?.readyState === WebSocket.OPEN) {
+                        ws.current.send(JSON.stringify({ type: 'UPDATE_DECK_DATA', deckData: rawJsonData }));
+                     }
+                }, 500);
+            }
         } else if (data.type === 'ERROR') {
             alert(data.message);
             // If an error occurs (e.g., game not found during rejoin), reset the state to show the main menu.
@@ -420,6 +448,8 @@ export const useGameState = () => {
     updateState(initialState);
     if (ws.current?.readyState === WebSocket.OPEN) {
         ws.current.send(JSON.stringify({ type: 'SUBSCRIBE', gameId: newGameId }));
+        // Also push decks
+        ws.current.send(JSON.stringify({ type: 'UPDATE_DECK_DATA', deckData: rawJsonData }));
     }
   }, [updateState, createInitialState, createNewPlayer]);
 
@@ -487,10 +517,52 @@ export const useGameState = () => {
 
   const syncGame = useCallback(() => {
     if (ws.current?.readyState === WebSocket.OPEN && gameStateRef.current.gameId && localPlayerIdRef.current === 1) {
+        // 1. Sync Definitions
+        ws.current.send(JSON.stringify({
+              type: 'UPDATE_DECK_DATA',
+              deckData: rawJsonData
+        }));
+
+        // 2. Refresh local state cards with latest definitions
+        // This ensures the Host's state is fully up-to-date before sending
+        const currentState = gameStateRef.current;
+        const refreshedState = JSON.parse(JSON.stringify(currentState));
+        
+        // Refresh cards in hand/deck/board with latest logic/text
+        refreshedState.players.forEach((p: Player) => {
+             ['hand', 'deck', 'discard'].forEach(pile => {
+                 // @ts-ignore
+                 if (p[pile]) {
+                    // @ts-ignore
+                    p[pile] = p[pile].map(c => {
+                        const def = getCardDefinitionByName(c.name);
+                        return def ? { ...c, ...def } : c;
+                    });
+                 }
+             });
+             if (p.announcedCard) {
+                 const def = getCardDefinitionByName(p.announcedCard.name);
+                 if (def) p.announcedCard = { ...p.announcedCard, ...def };
+             }
+        });
+        
+        refreshedState.board.forEach((row: any[]) => {
+            row.forEach(cell => {
+                if (cell.card) {
+                     const def = getCardDefinitionByName(cell.card.name);
+                     if (def) cell.card = { ...cell.card, ...def };
+                }
+            });
+        });
+
+        // 3. Send Force Sync
         ws.current.send(JSON.stringify({
             type: 'FORCE_SYNC',
-            gameState: gameStateRef.current
+            gameState: refreshedState
         }));
+        
+        // Also update local
+        setGameState(refreshedState);
     }
   }, []);
 
@@ -519,6 +591,7 @@ export const useGameState = () => {
                 isReadyCheckActive: false,
                 revealRequests: [],
                 activeTurnPlayerId: undefined,
+                currentPhase: 0,
             };
         });
     }, [updateState, createDeck]);
@@ -661,6 +734,51 @@ export const useGameState = () => {
         return newState;
     });
   }, [updateState]);
+
+    const addHandCardStatus = useCallback((playerId: number, cardIndex: number, status: string, addedByPlayerId: number) => {
+    updateState(currentState => {
+        if (!currentState.isGameStarted) return currentState;
+        const newState: GameState = JSON.parse(JSON.stringify(currentState));
+        const player = newState.players.find(p => p.id === playerId);
+        if (player && player.hand[cardIndex]) {
+            const card = player.hand[cardIndex];
+             // Prevent duplicate unique statuses from same player
+             if (['Support', 'Threat', 'Revealed'].includes(status)) {
+                const alreadyHasStatusFromPlayer = card.statuses?.some(s => s.type === status && s.addedByPlayerId === addedByPlayerId);
+                if (alreadyHasStatusFromPlayer) {
+                    return currentState;
+                }
+            }
+            if (!card.statuses) card.statuses = [];
+            card.statuses.push({ type: status, addedByPlayerId });
+        }
+        return newState;
+    });
+  }, [updateState]);
+
+  const removeHandCardStatus = useCallback((playerId: number, cardIndex: number, status: string) => {
+    updateState(currentState => {
+        if (!currentState.isGameStarted) return currentState;
+        const newState: GameState = JSON.parse(JSON.stringify(currentState));
+        const player = newState.players.find(p => p.id === playerId);
+        const card = player?.hand[cardIndex];
+        if (card?.statuses) {
+            const lastIndex = card.statuses.map(s => s.type).lastIndexOf(status);
+            if (lastIndex > -1) {
+                card.statuses.splice(lastIndex, 1);
+            }
+            // Sync revealedTo property
+             if (status === 'Revealed') {
+                const hasRevealed = card.statuses.some(s => s.type === 'Revealed');
+                if (!hasRevealed) {
+                    delete card.revealedTo;
+                }
+            }
+        }
+        return newState;
+    });
+  }, [updateState]);
+
 
   /**
    * Flips a face-down card on the board to be face-up.
@@ -1017,6 +1135,95 @@ export const useGameState = () => {
         });
     }, [updateState]);
 
+    const setPhase = useCallback((phaseIndex: number) => {
+        updateState(currentState => {
+            if (!currentState.isGameStarted) return currentState;
+            return {
+                ...currentState,
+                currentPhase: Math.max(0, Math.min(phaseIndex, TURN_PHASES.length - 1))
+            };
+        });
+    }, [updateState]);
+
+    const nextPhase = useCallback(() => {
+        updateState(currentState => {
+            if (!currentState.isGameStarted) return currentState;
+            const nextPhaseIndex = currentState.currentPhase + 1;
+
+            if (nextPhaseIndex >= TURN_PHASES.length) {
+                // Determine who is finishing their turn
+                const finishingPlayerId = currentState.activeTurnPlayerId;
+
+                // --- 1. Stun Decay Logic ---
+                // Before switching players, iterate through the board and reduce 'Stun' status 
+                // for the player who just finished their turn (Commit phase).
+                const newState: GameState = JSON.parse(JSON.stringify(currentState));
+                
+                if (finishingPlayerId !== undefined) {
+                    newState.board.forEach(row => {
+                        row.forEach(cell => {
+                            if (cell.card && cell.card.ownerId === finishingPlayerId && cell.card.statuses) {
+                                // Find index of a Stun status
+                                const stunIndex = cell.card.statuses.findIndex(s => s.type === 'Stun');
+                                if (stunIndex !== -1) {
+                                    // Remove exactly one Stun token
+                                    cell.card.statuses.splice(stunIndex, 1);
+                                }
+                            }
+                        });
+                    });
+                }
+
+                // If we hit the end of phases, reset to Setup (0) and switch active player
+                let nextPlayerId = finishingPlayerId;
+                
+                if (nextPlayerId !== undefined) {
+                    const sortedPlayers = [...newState.players].sort((a, b) => a.id - b.id);
+                    const currentIndex = sortedPlayers.findIndex(p => p.id === nextPlayerId);
+                    
+                    if (currentIndex !== -1) {
+                         // Find next player ID, cycling back to start
+                        let nextIndex = (currentIndex + 1) % sortedPlayers.length;
+                        // Skip disconnected players? Maybe not, allow turn passing.
+                        nextPlayerId = sortedPlayers[nextIndex].id;
+                    }
+                }
+                
+                // --- Reset enteredThisTurn for all cards when the turn (and phases) reset for next player ---
+                newState.currentPhase = 0;
+                newState.activeTurnPlayerId = nextPlayerId;
+
+                newState.board.forEach(row => {
+                    row.forEach(cell => {
+                        if (cell.card) {
+                            delete cell.card.enteredThisTurn;
+                            // Reset ability usage tracking for the new turn
+                            delete cell.card.abilityUsedInPhase;
+                        }
+                    });
+                });
+
+                return newState;
+            } else {
+                return {
+                    ...currentState,
+                    currentPhase: nextPhaseIndex
+                };
+            }
+        });
+    }, [updateState]);
+
+    const prevPhase = useCallback(() => {
+        updateState(currentState => {
+            if (!currentState.isGameStarted) return currentState;
+             // Simple decrement, clamping at 0. Doesn't reverse turn logic for now.
+            return {
+                ...currentState,
+                currentPhase: Math.max(0, currentState.currentPhase - 1)
+            };
+        });
+    }, [updateState]);
+
   /**
    * Moves a card from one location to another (e.g., hand to board).
    * @param {DragItem} item - The item being dragged.
@@ -1025,11 +1232,23 @@ export const useGameState = () => {
   const moveItem = useCallback((item: DragItem, target: DropTarget) => {
     updateState(currentState => {
         if (!currentState.isGameStarted) return currentState;
+
+        // Strict Occupancy Check: Prevent placing cards/tokens on occupied cells.
+        // Only 'counter_panel' items (status counters) are allowed on occupied cells.
+        if (target.target === 'board' && target.boardCoords) {
+             const targetCell = currentState.board[target.boardCoords.row][target.boardCoords.col];
+             // If cell is occupied and we are NOT applying a counter (which adds status), abort.
+             if (targetCell.card !== null && item.source !== 'counter_panel') {
+                 return currentState;
+             }
+        }
+
         // Create a deep copy to avoid direct state mutation.
         const newState: GameState = JSON.parse(JSON.stringify(currentState));
         
         // Ownership check: Prevent non-owners from moving cards from board to hand/deck/discard
-        if (item.source === 'board' && ['hand', 'deck', 'discard'].includes(target.target)) {
+        // UNLESS the item has bypassOwnershipCheck set to true (e.g. Destroy effects)
+        if (item.source === 'board' && ['hand', 'deck', 'discard'].includes(target.target) && !item.bypassOwnershipCheck) {
             const cardOwnerId = item.card.ownerId;
             const cardOwner = newState.players.find(p => p.id === cardOwnerId);
             const isOwner = cardOwnerId === localPlayerIdRef.current;
@@ -1040,7 +1259,130 @@ export const useGameState = () => {
                 return currentState;
             }
         }
+
+        // --- Stun Movement Restriction Logic ---
+        // If moving a card ON the board (Board to Board), check Stun status.
+        // Rule: Owners cannot move stunned cards. Opponents (non-allies) can.
+        if (item.source === 'board' && target.target === 'board') {
+            const card = item.card;
+            // Need to check STATUSES on the card. item.card might be stale if drag started long ago, 
+            // but usually safe. Best to check the board state if possible, but item.card is what we have.
+            // Actually, item.card comes from the DragItem state set onDragStart. 
+            // If statuses changed mid-drag (unlikely via sync), it might be stale.
+            // Let's check `currentState` board to be safe.
+            let currentCardState = card;
+            if (item.boardCoords) {
+                 const cell = currentState.board[item.boardCoords.row][item.boardCoords.col];
+                 if (cell.card) currentCardState = cell.card;
+            }
+
+            const isStunned = currentCardState.statuses?.some(s => s.type === 'Stun');
+
+            if (isStunned) {
+                const moverId = localPlayerIdRef.current;
+                const ownerId = currentCardState.ownerId;
+                
+                // Identify if Mover is Owner or Teammate
+                const moverPlayer = currentState.players.find(p => p.id === moverId);
+                const ownerPlayer = currentState.players.find(p => p.id === ownerId);
+
+                const isOwner = moverId === ownerId;
+                const isTeammate = moverPlayer?.teamId !== undefined && ownerPlayer?.teamId !== undefined && moverPlayer.teamId === ownerPlayer.teamId;
+                
+                if (isOwner || isTeammate) {
+                     // Block the move
+                     return currentState;
+                }
+            }
+        }
         
+        // --- Handle Counter Application (Logic for modifying existing cards) ---
+        if (item.source === 'counter_panel' && item.statusType) {
+            // Check allowed targets for this counter type
+            const counterDef = countersDatabase[item.statusType];
+            const allowedTargets = counterDef?.allowedTargets || ['board', 'hand'];
+            
+            if (!allowedTargets.includes(target.target)) {
+                return currentState;
+            }
+
+            let targetCard: Card | null = null;
+
+            // Find the target card based on drop location
+            if (target.target === 'board' && target.boardCoords) {
+                targetCard = newState.board[target.boardCoords.row][target.boardCoords.col].card;
+            } else if (target.playerId !== undefined) {
+                const targetPlayer = newState.players.find(p => p.id === target.playerId);
+                if (targetPlayer) {
+                    if (target.target === 'hand' && target.cardIndex !== undefined) {
+                        targetCard = targetPlayer.hand[target.cardIndex];
+                    }
+                    if (target.target === 'announced') {
+                        targetCard = targetPlayer.announcedCard || null;
+                    }
+
+                     // If dropping onto deck/discard piles (no specific index usually), apply to top card?
+                     if (target.target === 'deck' && targetPlayer.deck.length > 0) {
+                         if (target.deckPosition === 'top' || !target.deckPosition) {
+                             targetCard = targetPlayer.deck[0];
+                         } else {
+                             targetCard = targetPlayer.deck[targetPlayer.deck.length - 1];
+                         }
+                     } else if (target.target === 'discard' && targetPlayer.discard.length > 0) {
+                         // Apply to top card of discard
+                         targetCard = targetPlayer.discard[targetPlayer.discard.length - 1];
+                     }
+                }
+            }
+
+            // Note: App.tsx `handleGlobalMouseUp` handles specific card drops (like hand cards) 
+            // by calling specific logic or passing specific coords. 
+            // If we are here with `target='board'`, `targetCard` is found above.
+            
+            // If we found a valid card to modify
+            if (targetCard) {
+                const count = item.count || 1;
+                
+                if (item.statusType === 'Power+') {
+                    if (targetCard.powerModifier === undefined) targetCard.powerModifier = 0;
+                    targetCard.powerModifier += (1 * count);
+                } else if (item.statusType === 'Power-') {
+                    if (targetCard.powerModifier === undefined) targetCard.powerModifier = 0;
+                    targetCard.powerModifier -= (1 * count);
+                } else {
+                    // Regular statuses
+                    if (!targetCard.statuses) targetCard.statuses = [];
+                    
+                    // Add 'count' instances of the status
+                    for(let i=0; i<count; i++) {
+                        if (['Support', 'Threat', 'Revealed'].includes(item.statusType!)) {
+                            // These statuses are unique per player, don't stack duplicates from same player
+                            const exists = targetCard.statuses.some(s => s.type === item.statusType && s.addedByPlayerId === localPlayerIdRef.current);
+                            if (!exists && localPlayerIdRef.current !== null) {
+                                targetCard.statuses.push({ type: item.statusType!, addedByPlayerId: localPlayerIdRef.current });
+                            }
+                        } else {
+                            if (localPlayerIdRef.current !== null) {
+                                targetCard.statuses.push({ type: item.statusType!, addedByPlayerId: localPlayerIdRef.current });
+                            }
+                        }
+                    }
+                }
+                
+                // Recalculate board statuses if we modified a board card
+                if (target.target === 'board') {
+                     newState.board = recalculateBoardStatuses(newState);
+                }
+                
+                return newState;
+            }
+            
+            // If source is counter but we didn't find a target card (or it wasn't allowed), abort.
+            return currentState;
+        }
+
+        // --- Standard Card Move Logic ---
+
         let cardToMove: Card = { ...item.card };
 
         // --- Remove the card from its source location ---
@@ -1059,7 +1401,7 @@ export const useGameState = () => {
             const player = newState.players.find(p => p.id === item.playerId);
             if (player) player.announcedCard = null;
         }
-        // For 'token_panel' or 'counter_panel', there's no source to remove from.
+        // For 'token_panel', there's no source to remove from.
 
         // --- Pre-process card before adding to target ---
         const isReturningToStorage = ['hand', 'deck', 'discard'].includes(target.target);
@@ -1074,66 +1416,38 @@ export const useGameState = () => {
             cardToMove.isFaceDown = false;
             // Reset power modifier
             delete cardToMove.powerModifier;
+            // Reset enteredThisTurn
+            delete cardToMove.enteredThisTurn;
+            // Reset ability usage tracking
+            delete cardToMove.abilityUsedInPhase;
         } else if (target.target === 'board') {
-            // If source is counter_panel, we are applying status/power, not moving a card.
-            if (item.source === 'counter_panel' && target.boardCoords) {
-                 const targetCard = newState.board[target.boardCoords.row][target.boardCoords.col].card;
-                 if (targetCard && item.statusType) {
-                     const count = item.count || 1;
-                     
-                     if (item.statusType === 'Power+') {
-                         if (targetCard.powerModifier === undefined) targetCard.powerModifier = 0;
-                         targetCard.powerModifier += (1 * count);
-                     } else if (item.statusType === 'Power-') {
-                         if (targetCard.powerModifier === undefined) targetCard.powerModifier = 0;
-                         targetCard.powerModifier -= (1 * count);
-                     } else {
-                         // Regular statuses
-                         if (!targetCard.statuses) targetCard.statuses = [];
-                         
-                         // Add 'count' instances of the status
-                         for(let i=0; i<count; i++) {
-                             if (['Support', 'Threat', 'Revealed'].includes(item.statusType)) {
-                                 // These statuses are unique per player, don't stack duplicates from same player
-                                 const exists = targetCard.statuses.some(s => s.type === item.statusType && s.addedByPlayerId === localPlayerIdRef.current);
-                                 if (!exists && localPlayerIdRef.current !== null) {
-                                     targetCard.statuses.push({ type: item.statusType, addedByPlayerId: localPlayerIdRef.current });
-                                 }
-                             } else {
-                                 if (localPlayerIdRef.current !== null) {
-                                     targetCard.statuses.push({ type: item.statusType, addedByPlayerId: localPlayerIdRef.current });
-                                 }
-                             }
-                         }
-                     }
-                 }
-                 // Do not place the dummy "counter" card itself onto the board.
-                 // Just return the state with the modified existing card.
-                 return newState;
-            }
-
-
             // When moving to board, ensure we initialize an empty status array if needed.
             if (!cardToMove.statuses) cardToMove.statuses = [];
             
             // If it's coming from hand or other sources (except board-to-board moves),
             // we might want to set default face-down state.
-            // The `moveItem` call usually receives an already-configured card object from `playMode`.
-            // However, drag-and-drop defaults to face-up (handled in App.tsx / Drag logic).
              if (item.source !== 'board' && cardToMove.isFaceDown === undefined) {
                  cardToMove.isFaceDown = false; // Default to Face Up for drag and drop
+             }
+
+             // Mark card as entering this turn if not already on board
+             if (item.source !== 'board') {
+                 cardToMove.enteredThisTurn = true;
              }
         }
 
 
         // --- Add the card to its target location ---
         if (target.target === 'hand' && target.playerId !== undefined) {
+            // Remove Tokens or Counters if they hit the hand (effectively deleting them)
+            if (cardToMove.deck === DeckType.Tokens || cardToMove.deck === 'counter') {
+                return newState;
+            }
             const player = newState.players.find(p => p.id === target.playerId);
             if (player) player.hand.push(cardToMove);
         } else if (target.target === 'board' && target.boardCoords) {
-            // If target cell is occupied, swap (if source was board) or prevent (if source was external)?
-            // Currently, handleDrop in GameBoard prevents dropping on occupied cells.
-            // But for safety:
+            // Only place if cell is empty. 
+            // Note: We already checked occupancy at start of function, so this check is technically redundant but keeps logic safe.
             if (newState.board[target.boardCoords.row][target.boardCoords.col].card === null) {
                  // Assign owner if not set (e.g. generic tokens)
                 if (cardToMove.ownerId === undefined && localPlayerIdRef.current !== null) {
@@ -1144,38 +1458,21 @@ export const useGameState = () => {
                      }
                 }
                 
-                // --- Automatic 'LastPlayed' Logic ---
-                if (item.source === 'hand' && item.playerId !== undefined) {
-                     const playerId = item.playerId;
-                     
-                     // 1. Remove 'LastPlayed' status from any other cards on the board owned by this player.
-                     for (let r = 0; r < newState.board.length; r++) {
-                         for (let c = 0; c < newState.board[r].length; c++) {
-                             const boardCard = newState.board[r][c].card;
-                             if (boardCard && boardCard.ownerId === playerId && boardCard.statuses) {
-                                 boardCard.statuses = boardCard.statuses.filter(s => s.type !== 'LastPlayed');
-                             }
-                         }
-                     }
-                     
-                     // 2. Add 'LastPlayed' status to the newly played card.
-                     if (!cardToMove.statuses) cardToMove.statuses = [];
-                     // Prevent duplicates
-                     cardToMove.statuses = cardToMove.statuses.filter(s => s.type !== 'LastPlayed');
-                     cardToMove.statuses.push({ type: 'LastPlayed', addedByPlayerId: playerId });
-                }
-                
                 newState.board[target.boardCoords.row][target.boardCoords.col].card = cardToMove;
             }
         } else if (target.target === 'discard' && target.playerId !== undefined) {
-            // If it's a Token (DeckType.Tokens), do not add to discard pile. Effectively remove from game.
-            if (cardToMove.deck === 'Tokens') {
+            // If it's a Token (DeckType.Tokens) or Counter, do not add to discard pile. Effectively remove from game.
+            if (cardToMove.deck === DeckType.Tokens || cardToMove.deck === 'counter') {
                 // Do nothing. Card is removed from the game.
             } else {
                 const player = newState.players.find(p => p.id === target.playerId);
                 if (player) player.discard.push(cardToMove);
             }
         } else if (target.target === 'deck' && target.playerId !== undefined) {
+             // Remove Tokens or Counters if they hit the deck (effectively deleting them)
+            if (cardToMove.deck === DeckType.Tokens || cardToMove.deck === 'counter') {
+                return newState;
+            }
             const player = newState.players.find(p => p.id === target.playerId);
             if (player) {
                  if (target.deckPosition === 'top') {
@@ -1219,6 +1516,22 @@ export const useGameState = () => {
       }
   }, []);
 
+  /**
+   * Marks a card at the given coordinates as having used its ability for the current phase.
+   * @param boardCoords Coordinates of the card on the board.
+   */
+  const markAbilityUsed = useCallback((boardCoords: { row: number, col: number }) => {
+      updateState(currentState => {
+          if (!currentState.isGameStarted) return currentState;
+          const newState: GameState = JSON.parse(JSON.stringify(currentState));
+          const card = newState.board[boardCoords.row][boardCoords.col].card;
+          if (card) {
+              card.abilityUsedInPhase = newState.currentPhase;
+          }
+          return newState;
+      });
+  }, [updateState]);
+
   return {
     gameState,
     localPlayerId,
@@ -1255,6 +1568,8 @@ export const useGameState = () => {
     addAnnouncedCardStatus,
     removeAnnouncedCardStatus,
     modifyAnnouncedCardPower,
+    addHandCardStatus,
+    removeHandCardStatus,
     flipBoardCard,
     flipBoardCardFaceDown,
     revealHandCard,
@@ -1267,5 +1582,9 @@ export const useGameState = () => {
     toggleActiveTurnPlayer,
     forceReconnect,
     triggerHighlight, // Expose the trigger function
+    nextPhase,
+    prevPhase,
+    setPhase,
+    markAbilityUsed, // Expose function
   };
 };
