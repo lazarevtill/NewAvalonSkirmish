@@ -7,7 +7,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import type { GameState, Player, Board, GridSize, Card, DragItem, DropTarget, PlayerColor, GameMode, RevealRequest, CardIdentifier, CustomDeckFile, HighlightData } from '../types';
 import { DeckType, GameMode as GameModeEnum } from '../types';
 import { shuffleDeck, PLAYER_COLOR_NAMES, TURN_PHASES } from '../constants';
-import { decksData, countersDatabase, rawJsonData, getCardDefinitionByName, getCardDefinition, commandCardIds } from '../decks';
+import { decksData, countersDatabase, rawJsonData, getCardDefinitionByName, getCardDefinition, commandCardIds } from '../contentDatabase';
 import { createInitialBoard, recalculateBoardStatuses } from '../utils/boardUtils';
 
 const MAX_PLAYERS = 4;
@@ -154,10 +154,6 @@ export const useGameState = () => {
     });
   }, []);
   
-  // ... (Rest of websocket handling omitted for brevity, assumed unchanged) ...
-  // To satisfy the "replace entire file content" rule of the response format, I must include everything. 
-  // However, due to length limits, I'm including the full content but optimized where possible.
-
   /**
    * Establishes and manages the WebSocket connection, including event handlers and reconnection logic.
    */
@@ -501,6 +497,21 @@ export const useGameState = () => {
         }
         return newState;
     });
+  }, [updateState]);
+
+  const removeBoardCardStatusByOwner = useCallback((boardCoords: { row: number; col: number }, status: string, ownerId: number) => {
+      updateState(currentState => {
+          if (!currentState.isGameStarted) return currentState;
+          const newState: GameState = JSON.parse(JSON.stringify(currentState));
+          const card = newState.board[boardCoords.row][boardCoords.col].card;
+          if (card?.statuses) {
+              const index = card.statuses.findIndex(s => s.type === status && s.addedByPlayerId === ownerId);
+              if (index > -1) {
+                  card.statuses.splice(index, 1);
+              }
+          }
+          return newState;
+      });
   }, [updateState]);
 
     const modifyBoardCardPower = useCallback((boardCoords: { row: number; col: number }, delta: number) => {
@@ -965,10 +976,44 @@ export const useGameState = () => {
                     });
                 });
 
+                // Check for temporary 'Resurrected' status and convert to Stun x2
+                // This is specifically for the Immunis logic
+                newState.board.forEach(row => {
+                    row.forEach(cell => {
+                        if (cell.card && cell.card.statuses) {
+                            const resurrectedIdx = cell.card.statuses.findIndex(s => s.type === 'Resurrected');
+                            if (resurrectedIdx !== -1) {
+                                const addedBy = cell.card.statuses[resurrectedIdx].addedByPlayerId;
+                                cell.card.statuses.splice(resurrectedIdx, 1);
+                                cell.card.statuses.push({ type: 'Stun', addedByPlayerId: addedBy });
+                                cell.card.statuses.push({ type: 'Stun', addedByPlayerId: addedBy });
+                            }
+                        }
+                    });
+                });
+
                 return newState;
             } else {
+                const newState: GameState = JSON.parse(JSON.stringify(currentState));
+                
+                // Also check for temporary 'Resurrected' status on phase change (not just turn end)
+                // because the rule says "When player moves to next phase"
+                newState.board.forEach(row => {
+                    row.forEach(cell => {
+                        if (cell.card && cell.card.statuses) {
+                            const resurrectedIdx = cell.card.statuses.findIndex(s => s.type === 'Resurrected');
+                            if (resurrectedIdx !== -1) {
+                                const addedBy = cell.card.statuses[resurrectedIdx].addedByPlayerId;
+                                cell.card.statuses.splice(resurrectedIdx, 1);
+                                cell.card.statuses.push({ type: 'Stun', addedByPlayerId: addedBy });
+                                cell.card.statuses.push({ type: 'Stun', addedByPlayerId: addedBy });
+                            }
+                        }
+                    });
+                });
+
                 return {
-                    ...currentState,
+                    ...newState,
                     currentPhase: nextPhaseIndex
                 };
             }
@@ -1139,6 +1184,7 @@ export const useGameState = () => {
             delete cardToMove.powerModifier;
             delete cardToMove.enteredThisTurn;
             delete cardToMove.abilityUsedInPhase;
+            delete cardToMove.deployAbilityConsumed;
         } else if (target.target === 'board') {
             if (!cardToMove.statuses) cardToMove.statuses = [];
              if (item.source !== 'board' && cardToMove.isFaceDown === undefined) {
@@ -1146,6 +1192,7 @@ export const useGameState = () => {
              }
              if (item.source !== 'board') {
                  cardToMove.enteredThisTurn = true;
+                 delete cardToMove.deployAbilityConsumed;
              }
         }
 
@@ -1194,6 +1241,7 @@ export const useGameState = () => {
                     delete player.announcedCard.enteredThisTurn;
                     delete player.announcedCard.abilityUsedInPhase;
                     delete player.announcedCard.powerModifier;
+                    delete player.announcedCard.deployAbilityConsumed;
                     player.hand.push(player.announcedCard);
                 }
                 player.announcedCard = cardToMove;
@@ -1234,6 +1282,43 @@ export const useGameState = () => {
     });
   }, [updateState]);
 
+  const resurrectDiscardedCard = useCallback((playerId: number, cardIndex: number, boardCoords: {row: number, col: number}, statuses?: {type: string}[]) => {
+      updateState(currentState => {
+          if (!currentState.isGameStarted) return currentState;
+          
+          if (currentState.board[boardCoords.row][boardCoords.col].card !== null) return currentState;
+
+          const newState: GameState = JSON.parse(JSON.stringify(currentState));
+          const player = newState.players.find(p => p.id === playerId);
+          
+          if (player && player.discard.length > cardIndex) {
+              const [card] = player.discard.splice(cardIndex, 1);
+              
+              // Mark as entered this turn so it can act immediately in Deploy phase if resurrected then
+              card.enteredThisTurn = true;
+              // Reset deploy consumed since it's re-entering
+              delete card.deployAbilityConsumed;
+              
+              // Add transient status for "delayed stun"
+              // Immunis logic: It enters active, but gets stunned next phase.
+              if (!card.statuses) card.statuses = [];
+              card.statuses.push({ type: 'Resurrected', addedByPlayerId: playerId });
+
+              if (statuses) {
+                  statuses.forEach(s => {
+                      // Only add if not Resurrected (handled above)
+                      if (s.type !== 'Resurrected') {
+                          card.statuses?.push({ type: s.type, addedByPlayerId: playerId });
+                      }
+                  });
+              }
+              newState.board[boardCoords.row][boardCoords.col].card = card;
+              newState.board = recalculateBoardStatuses(newState);
+          }
+          return newState;
+      });
+  }, [updateState]);
+
   const triggerHighlight = useCallback((highlightData: Omit<HighlightData, 'timestamp'>) => {
       if (ws.current?.readyState === WebSocket.OPEN && gameStateRef.current.gameId) {
           const fullHighlightData: HighlightData = {
@@ -1248,13 +1333,16 @@ export const useGameState = () => {
       }
   }, []);
 
-  const markAbilityUsed = useCallback((boardCoords: { row: number, col: number }) => {
+  const markAbilityUsed = useCallback((boardCoords: { row: number, col: number }, isDeployAbility?: boolean) => {
       updateState(currentState => {
           if (!currentState.isGameStarted) return currentState;
           const newState: GameState = JSON.parse(JSON.stringify(currentState));
           const card = newState.board[boardCoords.row][boardCoords.col].card;
           if (card) {
               card.abilityUsedInPhase = newState.currentPhase;
+              if (isDeployAbility) {
+                  card.deployAbilityConsumed = true;
+              }
           }
           return newState;
       });
@@ -1459,6 +1547,7 @@ export const useGameState = () => {
     handleDrop: moveItem,
     addBoardCardStatus,
     removeBoardCardStatus,
+    removeBoardCardStatusByOwner,
     modifyBoardCardPower,
     addAnnouncedCardStatus,
     removeAnnouncedCardStatus,
@@ -1485,6 +1574,7 @@ export const useGameState = () => {
     transferStatus,
     transferAllCounters, 
     recoverDiscardedCard,
+    resurrectDiscardedCard,
     spawnToken,
     scoreLine
   };

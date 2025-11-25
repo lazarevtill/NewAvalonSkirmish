@@ -1,4 +1,3 @@
-
 import { GameState, Card } from '../types';
 import { AbilityAction } from './autoAbilities';
 
@@ -97,11 +96,12 @@ export const calculateValidTargets = (
     
     const { mode, payload, sourceCoords } = action;
 
-    // 1. Generic TARGET selection (e.g. Stun, Exploit, Destroy)
-    if (mode === 'SELECT_TARGET' && payload.filter) {
+    // 1. Generic TARGET selection (e.g. Stun, Exploit, Destroy) or Specific Modes using Filters
+    if ((mode === 'SELECT_TARGET' || mode === 'CENSOR_SWAP' || mode === 'ZEALOUS_WEAKEN' || mode === 'CENTURION_BUFF' || mode === 'SELECT_UNIT_FOR_MOVE') && payload.filter) {
          for(let r=0; r<gridSize; r++) {
              for(let c=0; c<gridSize; c++) {
                  const cell = board[r][c];
+                 // Pass coordinates to filter if needed
                  if (cell.card && payload.filter(cell.card, r, c)) {
                      targets.push({row: r, col: c});
                  }
@@ -187,22 +187,36 @@ export const calculateValidTargets = (
          }
     }
     // 7. Spawn Token / Select Cell
-    else if ((mode === 'SPAWN_TOKEN' || mode === 'SELECT_CELL') && sourceCoords) {
+    else if ((mode === 'SPAWN_TOKEN' || mode === 'SELECT_CELL' || mode === 'IMMUNIS_RETRIEVE') && sourceCoords) {
+         // Note: IMMUNIS_RETRIEVE behaves like select cell when picking the destination
          for(let r=0; r<gridSize; r++) {
              for(let c=0; c<gridSize; c++) {
                  const isEmpty = !board[r][c].card;
-                 const isAdj = Math.abs(r - sourceCoords.row) + Math.abs(c - sourceCoords.col) === 1;
-                 const isSame = r === sourceCoords.row && c === sourceCoords.col;
                  
-                 // For Inventive Maker Spawn (Adj)
-                 if (mode === 'SPAWN_TOKEN' && isEmpty && isAdj) {
-                      targets.push({row: r, col: c});
+                 // If Immunis logic, we check filter (adjacency)
+                 if (mode === 'IMMUNIS_RETRIEVE' && payload.filter) {
+                     if (isEmpty && payload.filter(r, c)) {
+                         targets.push({row: r, col: c});
+                     }
+                     continue;
                  }
-                 // For Generic Select Cell (e.g. Recon Drone move)
+
+                 // For Generic Select Cell (e.g. Recon Drone move, Fusion moves)
                  // Payload allowSelf controls "Stay"
                  if (mode === 'SELECT_CELL') {
-                     if (isEmpty) targets.push({row: r, col: c});
+                     const isAdj = Math.abs(r - sourceCoords.row) + Math.abs(c - sourceCoords.col) === 1;
+                     const isSame = r === sourceCoords.row && c === sourceCoords.col;
+                     const isGlobal = payload.range === 'global';
+
+                     if (isEmpty && (isAdj || isGlobal)) targets.push({row: r, col: c});
+                     
                      if (payload.allowSelf && isSame) targets.push({row: r, col: c});
+                 } else if (mode === 'SPAWN_TOKEN') {
+                     // For Inventive Maker Spawn (Adj)
+                     const isAdj = Math.abs(r - sourceCoords.row) + Math.abs(c - sourceCoords.col) === 1;
+                     if (isEmpty && isAdj) {
+                          targets.push({row: r, col: c});
+                     }
                  }
              }
          }
@@ -218,17 +232,16 @@ export const calculateValidTargets = (
              }
          }
     }
-    // 9. Select Line (Mobilization)
+    // 9. Select Line Start (Any cell)
     else if (mode === 'SELECT_LINE_START') {
-         // Any cell
          for(let r=0; r<gridSize; r++) {
              for(let c=0; c<gridSize; c++) {
                  targets.push({row: r, col: c});
              }
          }
     }
+    // 10. Select Line End (Cells in same row/col)
     else if (mode === 'SELECT_LINE_END' && payload.firstCoords) {
-        // Any cell in same row/col as first
          for(let r=0; r<gridSize; r++) {
              for(let c=0; c<gridSize; c++) {
                  const isRow = r === payload.firstCoords.row;

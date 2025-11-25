@@ -80,6 +80,9 @@ export const Card: React.FC<CardProps> = ({ card, isFaceUp, playerColorMap, loca
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (disableTooltip) return;
+    // Prevent setting 0,0
+    if (e.clientX === 0 && e.clientY === 0) return;
+    
     setTooltipPos({ x: e.clientX, y: e.clientY });
     // Ensure tooltip shows if mouseEnter was missed (e.g. after drop)
     if (!tooltipVisible && !tooltipTimeoutRef.current) {
@@ -89,8 +92,13 @@ export const Card: React.FC<CardProps> = ({ card, isFaceUp, playerColorMap, loca
     }
   };
   
-  const handleMouseEnter = () => {
+  const handleMouseEnter = (e: React.MouseEvent) => {
     if (disableTooltip) return;
+    // Initialize position immediately on enter to prevent 0,0 rendering if mouse doesn't move
+    if (e.clientX !== 0 || e.clientY !== 0) {
+        setTooltipPos({ x: e.clientX, y: e.clientY });
+    }
+    
     if (tooltipTimeoutRef.current) {
         clearTimeout(tooltipTimeoutRef.current);
     }
@@ -226,6 +234,9 @@ export const Card: React.FC<CardProps> = ({ card, isFaceUp, playerColorMap, loca
   if (modifier > 0) powerTextColor = "text-green-400";
   else if (modifier < 0) powerTextColor = "text-red-500";
   
+  // Robust check for displaying tooltip: visible + coordinate check (prevent 0,0)
+  const showTooltip = tooltipVisible && isFaceUp && !disableTooltip && (tooltipPos.x > 0 && tooltipPos.y > 0);
+
   return (
     <>
       {!isFaceUp ? (
@@ -327,7 +338,7 @@ export const Card: React.FC<CardProps> = ({ card, isFaceUp, playerColorMap, loca
         })()
       )}
 
-      {tooltipVisible && isFaceUp && !disableTooltip && (
+      {showTooltip && (
           <Tooltip x={tooltipPos.x} y={tooltipPos.y}>
              <CardTooltipContent card={card} />
           </Tooltip>

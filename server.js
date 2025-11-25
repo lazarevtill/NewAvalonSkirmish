@@ -12,7 +12,7 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DECKS_FILE_PATH = path.join(__dirname, 'decks.json');
+const DECKS_FILE_PATH = path.join(__dirname, 'contentDatabase.json');
 const DIST_PATH = path.join(__dirname, 'dist');
 const LOGS_DIR = path.join(__dirname, 'logs');
 
@@ -42,7 +42,7 @@ try {
     deckFiles = allDecksData.deckFiles;
     console.log('Deck data loaded successfully.');
 } catch (error) {
-    console.error('Fatal: Could not read or parse decks.json. The server cannot start.', error);
+    console.error('Fatal: Could not read or parse contentDatabase.json. The server cannot start.', error);
     process.exit(1);
 }
 
@@ -135,7 +135,7 @@ const generatePlayerToken = () => Math.random().toString(36).substring(2);
 const createNewPlayer = (id) => {
     const initialDeck = deckFiles.find(df => df.isSelectable);
     if (!initialDeck) {
-        console.error("No selectable decks found in decks.json!");
+        console.error("No selectable decks found in contentDatabase.json!");
         process.exit(1); // Cannot create players without decks
     }
     const initialDeckType = initialDeck.id;

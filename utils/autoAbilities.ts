@@ -1,446 +1,206 @@
-/**
- * @file Logic for specific card abilities in New Avalon: Skirmish.
- * Handles highlighting (canActivate) and action generation (getAction).
- */
+import { Card, GameState, CardStatus } from '../types';
 
-import type { Card, GameState, Board, Player } from '../types';
-
-export type AbilityModeType = 
-    | 'SELECT_TARGET'      // Generic: Pick a card satisfying criteria
-    | 'SELECT_CELL'        // Generic: Pick an empty cell satisfying criteria
-    | 'RIOT_PUSH'          // Specific: Riot Agent push logic
-    | 'RIOT_MOVE'          // Specific: Riot Agent follow-up move
-    | 'PATROL_MOVE'        // Specific: Patrol Agent line move
-    | 'SWAP_POSITIONS'     // Specific: Reckless Provocateur swap
-    | 'TRANSFER_STATUS_SELECT' // Specific: Select card to steal status from (Single)
-    | 'TRANSFER_ALL_STATUSES'  // Specific: Select card to steal ALL valid statuses from
-    | 'SPAWN_TOKEN'        // Specific: Spawn a token
-    | 'RETRIEVE_DEVICE'    // Specific: Open discard to retrieve device
-    | 'REVEAL_ENEMY'       // Specific: Recon drone reveal
-    | 'SELECT_LINE_START'  // Specific: Mobilization line select step 1
-    | 'SELECT_LINE_END';   // Specific: Mobilization line select step 2
-
-export interface AbilityAction {
+export type AbilityAction = {
     type: 'CREATE_STACK' | 'ENTER_MODE' | 'OPEN_MODAL';
-    tokenType?: string;     // For CREATE_STACK or ENTER_MODE visuals
-    count?: number;         // For CREATE_STACK
-    mode?: AbilityModeType; // For ENTER_MODE
-    sourceCard?: Card;      // Context
-    sourceCoords?: { row: number, col: number }; // Context
-    payload?: any;          // Extra data (e.g. allowed target IDs)
-    targetReq?: string;     // Short description of the required target for UI tooltips
-    
-    // --- TARGETING CONSTRAINTS ---
-    excludeOwnerId?: number; // Illegal: Target owner matches this ID
-    targetOwnerId?: number;  // Legal: Target owner MUST match this ID
-    onlyOpponents?: boolean; // Legal: Must be opponent (not self, not teammate)
-    onlyFaceDown?: boolean;  // Legal: Must be Face Down / Unrevealed AND have no 'Revealed' token
-}
-
-export const PHASE_KEYWORDS: Record<number, string> = {
-    0: 'Setup',
-    1: 'Command Phase #1',
-    2: 'Deploy',
-    3: 'Command Phase #2',
-    4: 'Commit'
+    mode?: string;
+    tokenType?: string;
+    count?: number;
+    onlyFaceDown?: boolean;
+    onlyOpponents?: boolean;
+    targetOwnerId?: number;
+    excludeOwnerId?: number;
+    sourceCard?: Card;
+    sourceCoords?: { row: number, col: number };
+    payload?: any;
+    isDeployAbility?: boolean;
 };
 
-// --- Helpers ---
+export const isLine = (r1: number, c1: number, r2: number, c2: number): boolean => {
+    return r1 === r2 || c1 === c2;
+};
 
 export const isAdjacent = (r1: number, c1: number, r2: number, c2: number): boolean => {
     return Math.abs(r1 - r2) + Math.abs(c1 - c2) === 1;
 };
 
-export const hasStatus = (card: Card, type: string, playerId: number): boolean => {
-    return card.statuses?.some(s => s.type === type && s.addedByPlayerId === playerId) || false;
+const hasStatus = (card: Card, type: string, playerId?: number): boolean => {
+    if (!card.statuses) return false;
+    return card.statuses.some(s => s.type === type && (playerId === undefined || s.addedByPlayerId === playerId));
 };
 
-const hasAnyStatus = (card: Card, type: string): boolean => {
-    return card.statuses?.some(s => s.type === type) || false;
-};
-
-const hasSupport = (card: Card): boolean => {
-    return card.statuses?.some(s => s.type === 'Support') || false;
-};
-
-const countExploitsOnBoard = (board: Board, playerId: number): number => {
-    let count = 0;
-    board.forEach(row => {
-        row.forEach(cell => {
-            if (cell.card) {
-                // Count every instance of exploit from this player
-                const exploits = cell.card.statuses?.filter(s => s.type === 'Exploit' && s.addedByPlayerId === playerId).length || 0;
-                count += exploits;
-            }
-        });
-    });
-    return count;
-};
-
-const isTeammate = (p1: Player | undefined, p2: Player | undefined) => {
-    if (!p1 || !p2) return false;
-    return p1.teamId !== undefined && p2.teamId !== undefined && p1.teamId === p2.teamId;
-};
-
-/**
- * Determines if a card should be highlighted/clickable in the current phase.
- */
-export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPlayerId: number): boolean => {
-    // 1. Basic Checks
-    if (card.ownerId !== activeTurnPlayerId) return false;
-    
-    // Stunned cards cannot activate abilities
-    if (hasAnyStatus(card, 'Stun')) return false;
-
-    // Check if ability was already used in this phase
+export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPlayerId: number | undefined): boolean => {
+    if (activeTurnPlayerId !== card.ownerId) return false;
     if (card.abilityUsedInPhase === phaseIndex) return false;
-    
-    // Command Cards in Showcase (Announced) are usable in Command Phases
-    if (card.deck === 'Command') {
-        return phaseIndex === 1 || phaseIndex === 3;
-    }
-    
-    const phaseName = PHASE_KEYWORDS[phaseIndex];
-    if (!phaseName) return false;
-    
-    // Must strictly mention the phase name
-    // Special handling for "Support => X"
-    const requiresSupport = card.ability.includes(`Support ⇒ ${phaseName}`) || card.ability.includes(`Support => ${phaseName}`);
-    
-    // If exact phase match "Deploy:", "Setup:", "Commit:" etc.
-    // Or if Support requirement is met.
-    const hasPhaseKeyword = card.ability.includes(`${phaseName}:`);
-    
-    if (!hasPhaseKeyword && !requiresSupport) return false;
-    
-    // 2. Phase Specific Rules
-    
-    // Deploy Phase: Card must have entered battlefield THIS turn (unless it's a Command)
-    if (phaseIndex === 2 && card.types?.includes('Unit')) {
-        if (!card.enteredThisTurn) return false;
-    }
+    if (card.statuses?.some(s => s.type === 'Stun')) return false;
 
-    // Support Requirement Check
-    if (requiresSupport) {
-         if (!hasSupport(card)) return false;
-    }
-
-    // 3. Card Specific Logic (Prerequisites)
     const name = card.name.toLowerCase();
+    const abilityText = card.ability ? card.ability.toLowerCase() : '';
+    const isResurrected = hasStatus(card, 'Resurrected');
 
-    if (name.includes('tactical agent') && phaseIndex === 0) {
-        // Setup: Destroy card with aim.
-        return true; 
+    // Special Rule: Resurrected units (e.g. via Immunis) or entered units can use Deploy abilities immediately (usually in Setup phase)
+    if ((isResurrected || card.enteredThisTurn) && abilityText.includes('deploy:')) {
+        // Strictly check if consumed
+        return !card.deployAbilityConsumed;
     }
 
-    return true;
+    // Phase 1 (Command 1) & 3 (Command 2) -> "Act:" abilities
+    if (phaseIndex === 1 || phaseIndex === 3) {
+        if (abilityText.includes('act:')) return true;
+    }
+
+    // Phase 2 (Deploy) -> "Deploy:" abilities
+    if (phaseIndex === 2) {
+        // Strictly check if consumed
+        if (card.deployAbilityConsumed) return false;
+
+        if (abilityText.includes('deploy:')) return true;
+        // Immunis Support => Deploy
+        if (name.includes('immunis')) {
+            return hasStatus(card, 'Support', activeTurnPlayerId);
+        }
+    }
+    
+    // Phase 4 (Commit) -> "Commit:" abilities
+    if (phaseIndex === 4) {
+        if (abilityText.includes('commit:')) return true;
+        // Explicit checks for cards that might rely on keywords like "Support => Commit"
+        if (name.includes('censor')) return true;
+        if (name.includes('walking turret')) return true;
+        if (name.includes('reckless provocateur')) return true;
+        if (name.includes('vigilant spotter')) return true;
+        if (name.includes('threat analyst')) return true;
+        if (name.includes('patrol agent')) return true;
+        if (name.includes('zealous missionary')) return true;
+        if (name.includes('code keeper')) return true;
+        if (name.includes('signal prophet')) return true;
+        if (name.includes('riot agent')) return true;
+        if (name.includes('ip dept agent')) return true;
+        if (name.includes('recon drone')) return true;
+    }
+    
+    // Phase 0 (Setup) -> "Setup:" abilities
+    if (phaseIndex === 0) {
+        // Conditional Setup Abilities (Require Support)
+        if (name.includes('centurion')) {
+             return hasStatus(card, 'Support', activeTurnPlayerId);
+        }
+        if (name.includes('cautious avenger')) {
+             return hasStatus(card, 'Support', activeTurnPlayerId);
+        }
+        if (name.includes('inventive maker')) {
+             return hasStatus(card, 'Support', activeTurnPlayerId);
+        }
+        if (name.includes('devout synthetic')) {
+             return hasStatus(card, 'Support', activeTurnPlayerId);
+        }
+        if (name.includes('unwavering integrator')) {
+             return hasStatus(card, 'Support', activeTurnPlayerId);
+        }
+
+        if (abilityText.includes('setup:')) return true;
+        if (name.includes('princeps')) return true;
+        if (name.includes('tactical agent')) return true;
+        if (name.includes('patrol agent')) return true;
+        if (name.includes('recon drone')) return true;
+    }
+
+    return false;
 };
 
-/**
- * Generates the action to take when a highlighted card is clicked.
- */
 export const getCardAbilityAction = (
-    card: Card, 
-    gameState: GameState, 
-    ownerId: number,
+    card: Card,
+    gameState: GameState,
+    localPlayerId: number | null,
     coords: { row: number, col: number }
 ): AbilityAction | null => {
-    const phaseIndex = gameState.currentPhase;
     const name = card.name.toLowerCase();
-    const ownerPlayer = gameState.players.find(p => p.id === ownerId);
+    const phaseIndex = gameState.currentPhase;
+    const ownerId = card.ownerId;
+    const isResurrected = hasStatus(card, 'Resurrected');
+    // Deploy abilities take precedence if card just entered play or is resurrected, OR if it's strictly Deploy phase.
+    const isDeployTrigger = phaseIndex === 2 || isResurrected || card.enteredThisTurn;
 
-    // --- MOBILIZATION (Line Breach) ---
-    // The card ID is mobilization (from decks.json), often referred to as Line Breach ability.
-    // Usable in Command Phase #1 (1) and Command Phase #2 (3).
-    if (card.id.includes('MOBILIZATION') && (phaseIndex === 1 || phaseIndex === 3)) {
-        return {
-            type: 'ENTER_MODE',
-            mode: 'SELECT_LINE_START',
-            sourceCard: card,
-            sourceCoords: coords,
-            payload: {}
-        };
-    }
+    if (localPlayerId !== ownerId) return null;
 
-    // --- RECKLESS PROVOCATEUR ---
-    if (name.includes('reckless provocateur')) {
-        // Deploy: Swap positions with a card in an adjacent cell.
-        // Note: `canActivateAbility` ensures `enteredThisTurn` is true for Phase 2.
-        if (phaseIndex === 2) {
-             return {
-                type: 'ENTER_MODE',
-                mode: 'SWAP_POSITIONS',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    // Explicitly exclude self, even though isAdjacent implies it
-                    filter: (target: Card, tRow: number, tCol: number) => isAdjacent(coords.row, coords.col, tRow, tCol) && target.id !== card.id
-                }
-            };
-        }
-        // Commit: Move all counters from another allied card to this card (except Threat/Support/Power).
-        if (phaseIndex === 4) {
-             return {
-                type: 'ENTER_MODE',
-                mode: 'TRANSFER_ALL_STATUSES',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    filter: (target: Card) => {
-                        // Allied: Same owner OR teammate
-                        const targetOwner = gameState.players.find(p => p.id === target.ownerId);
-                        const isAlly = target.ownerId === ownerId || isTeammate(ownerPlayer, targetOwner);
-                        // Must not be self
-                        if (target.id === card.id) return false;
-                        // Must be an ally
-                        if (!isAlly) return false;
-                        
-                        // Must have at least one transferable counter (status)
-                        // Transferable = NOT 'Support', 'Threat'.
-                        // Power is ignored as it's a property, so if only power exists, return false effectively.
-                        return target.statuses && target.statuses.some(s => !['Support', 'Threat'].includes(s.type));
-                    }
-                }
-            };
-        }
-    }
+    // Check strict consumption for deploy abilities
+    if (isDeployTrigger && card.deployAbilityConsumed) return null;
 
-    // --- DATA LIBERATOR ---
-    if (name.includes('data liberator')) {
-        // Deploy: Exploit any card.
-        if (phaseIndex === 2) {
-            return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1 };
-        }
-    }
+    // --- SYNCHROTECH ---
 
-    // --- CAUTIOUS AVENGER ---
-    if (name.includes('cautious avenger')) {
-        // Deploy: Aim card in line
-        if (phaseIndex === 2) {
-             return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_TARGET',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    tokenType: 'Aim',
-                    filter: (target: Card, tRow: number, tCol: number) => {
-                        // EXCLUDE SELF to avoid accidental self-targeting
-                        return (tRow === coords.row || tCol === coords.col) && target.id !== card.id;
-                    }
-                }
-            };
-        }
-        // Support => Setup: Destroy card with Aim
-        if (phaseIndex === 0) {
-            return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_TARGET',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    actionType: 'DESTROY',
-                    filter: (target: Card) => hasStatus(target, 'Aim', ownerId)
-                }
-            };
-        }
-    }
-
-    // --- VIGILANT SPOTTER ---
-    if (name.includes('vigilant spotter')) {
-        // Commit: Each opponent reveals 1 cards to you.
-        // Legal targets: Opponents only, and only Face Down/Unrevealed cards.
-        if (phaseIndex === 4) {
-             return {
-                type: 'CREATE_STACK',
-                tokenType: 'Revealed',
-                count: 1,
-                onlyOpponents: true, 
-                onlyFaceDown: true 
-            };
-        }
-    }
-
-    // --- INVENTIVE MAKER ---
-    if (name.includes('inventive maker')) {
-        // Deploy: Place Recon Drone in free adjacent cell
-        if (phaseIndex === 2) {
-             return {
-                type: 'ENTER_MODE',
-                mode: 'SPAWN_TOKEN',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    tokenName: 'Recon Drone'
-                }
-            };
-        }
-        // Support => Setup: Return Device from discard
-        if (phaseIndex === 0) {
-             return {
-                type: 'OPEN_MODAL',
-                mode: 'RETRIEVE_DEVICE',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {}
-            };
-        }
-    }
-
-    // --- RECON DRONE (Token) ---
-    if (name.includes('recon drone')) {
-        // Setup: Move to any cell
-        if (phaseIndex === 0) {
-             return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_CELL', // Generic move
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    allowSelf: true // Can choose self to stay
-                }
-            };
-        }
-        // Commit: Reveal card of adjacent owner.
-        if (phaseIndex === 4) {
-             return {
-                type: 'ENTER_MODE',
-                mode: 'REVEAL_ENEMY',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                     // This filter is for SELECTING the target to reveal (Step 1).
-                     // It must be an adjacent card belonging to an OPPONENT.
-                     filter: (target: Card, tRow: number, tCol: number) => {
-                        // Must be adjacent
-                        if (!isAdjacent(coords.row, coords.col, tRow, tCol)) return false;
-                        
-                        // Opponent Check
-                        const targetOwner = gameState.players.find(p => p.id === target.ownerId);
-                        if (target.ownerId === ownerId || isTeammate(ownerPlayer, targetOwner)) return false;
-
-                        // Note: We do NOT check isFaceDown here because Step 1 is "Select Neighbor",
-                        // not "Select Card to Reveal". Step 2 applies the strict reveal constraints on that owner's cards.
-                        return true;
-                     }
-                }
-            };
-        }
-    }
-
-
-    // --- IP DEPT AGENT ---
+    // IP DEPT AGENT
     if (name.includes('ip dept agent')) {
-        // Deploy: Stun ANY card with exploit
-        if (phaseIndex === 2) {
+        if (isDeployTrigger) {
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
                 sourceCard: card,
                 sourceCoords: coords,
+                isDeployAbility: true,
                 payload: {
                     tokenType: 'Stun',
                     count: 2,
-                    filter: (target: Card) => hasStatus(target, 'Exploit', ownerId)
+                    filter: (target: Card) => hasStatus(target, 'Exploit')
                 }
             };
         }
-        // Commit (Support): Destroy a revealed card (IN HAND ONLY)
-        if (phaseIndex === 4) {
+        if (phaseIndex === 4) { // Commit
+             if (!hasStatus(card, 'Support', ownerId)) return null;
              return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_TARGET',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    actionType: 'DESTROY',
-                    filter: (target: Card, row?: number, col?: number) => {
-                        if (row !== undefined || col !== undefined) return false;
-                        const isRevealedStatus = hasAnyStatus(target, 'Revealed');
-                        const isRevealedProp = target.revealedTo === 'all'; 
-                        return isRevealedStatus || isRevealedProp;
-                    }
-                }
-            };
+                 type: 'ENTER_MODE',
+                 mode: 'SELECT_TARGET',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     actionType: 'DESTROY',
+                     filter: (target: Card) => target.ownerId !== ownerId && hasStatus(target, 'Revealed', localPlayerId!)
+                 }
+             };
         }
     }
 
-    // --- TACTICAL AGENT ---
+    // TACTICAL AGENT
     if (name.includes('tactical agent')) {
-        // Deploy: Aim card with your Threat
-        if (phaseIndex === 2) {
+        if (isDeployTrigger) {
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
                 sourceCard: card,
                 sourceCoords: coords,
+                isDeployAbility: true,
                 payload: {
                     tokenType: 'Aim',
-                    filter: (target: Card) => hasStatus(target, 'Threat', ownerId)
+                    // Target must have Threat token from THIS player (localPlayerId!)
+                    filter: (target: Card) => hasStatus(target, 'Threat', localPlayerId!)
                 }
             };
         }
-        // Setup: Destroy card with your Aim
-        if (phaseIndex === 0) {
-            return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_TARGET',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    actionType: 'DESTROY',
-                    filter: (target: Card) => hasStatus(target, 'Aim', ownerId)
-                }
-            };
+        if (phaseIndex === 0) { // Setup
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SELECT_TARGET',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     actionType: 'DESTROY',
+                     filter: (target: Card) => hasStatus(target, 'Aim')
+                 }
+             };
         }
     }
 
-    // --- PATROL AGENT ---
+    // PATROL AGENT
     if (name.includes('patrol agent')) {
-        // Setup: Move self to any cell in line
-        if (phaseIndex === 0) {
+        if (phaseIndex === 0) { // Setup
             return {
                 type: 'ENTER_MODE',
                 mode: 'PATROL_MOVE',
                 sourceCard: card,
                 sourceCoords: coords,
-                payload: {
-                }
+                payload: {}
             };
         }
-        // Commit (Support): Stun adjacent opponent with your Threat
-        if (phaseIndex === 4) {
-            return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_TARGET',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                    tokenType: 'Stun',
-                    filter: (target: Card, tRow: number, tCol: number) => 
-                        isAdjacent(coords.row, coords.col, tRow, tCol) && 
-                        target.ownerId !== ownerId && 
-                        hasStatus(target, 'Threat', ownerId)
-                }
-            };
-        }
-    }
-
-    // --- RIOT AGENT ---
-    if (name.includes('riot agent')) {
-        // Deploy: Push adjacent opponent
-        if (phaseIndex === 2) {
-            return {
-                type: 'ENTER_MODE',
-                mode: 'RIOT_PUSH',
-                sourceCard: card,
-                sourceCoords: coords,
-                payload: {
-                }
-            };
-        }
-        // Commit (Support): Stun adjacent opponent with your Threat
-        if (phaseIndex === 4) {
+        if (phaseIndex === 4) { // Commit
+             if (!hasStatus(card, 'Support', ownerId)) return null;
              return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
@@ -448,28 +208,480 @@ export const getCardAbilityAction = (
                 sourceCoords: coords,
                 payload: {
                     tokenType: 'Stun',
-                    filter: (target: Card, tRow: number, tCol: number) => 
-                        isAdjacent(coords.row, coords.col, tRow, tCol) && 
+                    filter: (target: Card, r: number, c: number) => 
                         target.ownerId !== ownerId && 
-                        hasStatus(target, 'Threat', ownerId)
+                        isAdjacent(r, c, coords.row, coords.col) && 
+                        hasStatus(target, 'Threat')
                 }
             };
         }
     }
 
-    // --- THREAT ANALYST ---
-    if (name.includes('threat analyst')) {
-        // Deploy: Cursor gets Exploit
-        if (phaseIndex === 2) {
-            return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1 };
+    // RIOT AGENT
+    if (name.includes('riot agent')) {
+        // Deploy: Push adjacent
+        if (isDeployTrigger) {
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'RIOT_PUSH',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 isDeployAbility: true,
+                 payload: {}
+             };
         }
-        // Commit (Support): Cursor gets Reveals = total exploits
+        // Support => Commit: Stun adjacent opponent with threat
         if (phaseIndex === 4) {
-            const count = countExploitsOnBoard(gameState.board, ownerId);
-            if (count > 0) {
-                return { type: 'CREATE_STACK', tokenType: 'Revealed', count: count };
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             return {
+                type: 'ENTER_MODE',
+                mode: 'SELECT_TARGET',
+                sourceCard: card,
+                sourceCoords: coords,
+                payload: {
+                    tokenType: 'Stun',
+                    filter: (target: Card, r: number, c: number) => 
+                        target.ownerId !== ownerId && 
+                        isAdjacent(r, c, coords.row, coords.col) && 
+                        hasStatus(target, 'Threat')
+                }
+            };
+        }
+    }
+
+    // THREAT ANALYST
+    if (name.includes('threat analyst')) {
+        if (isDeployTrigger) {
+            return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1, isDeployAbility: true };
+        }
+        if (phaseIndex === 4) { // Commit
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             
+             // Count total exploits owned by player
+             let exploitCount = 0;
+             gameState.board.forEach(row => {
+                 row.forEach(cell => {
+                     if (cell.card && hasStatus(cell.card, 'Exploit', localPlayerId!)) {
+                         exploitCount++;
+                     }
+                 });
+             });
+             
+             if (exploitCount > 0) {
+                 return { type: 'CREATE_STACK', tokenType: 'Revealed', count: exploitCount };
+             }
+        }
+    }
+
+    // --- HOODS ---
+
+    // RECKLESS PROVOCATEUR
+    if (name.includes('reckless provocateur')) {
+        if (isDeployTrigger) {
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SWAP_POSITIONS',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 isDeployAbility: true,
+                 payload: {
+                     filter: (target: Card, r: number, c: number) => isAdjacent(r, c, coords.row, coords.col)
+                 }
+             };
+        }
+        if (phaseIndex === 4) { // Commit
+             // Move all counters from an allied card to this card
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'TRANSFER_ALL_STATUSES',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     // Ally only (Owner or Teammate), but NOT self
+                     filter: (target: Card) => {
+                         if (target.id === card.id) return false;
+                         const targetPlayer = gameState.players.find(p => p.id === target.ownerId);
+                         const localPlayer = gameState.players.find(p => p.id === ownerId);
+                         const isAlly = target.ownerId === ownerId || (targetPlayer?.teamId !== undefined && localPlayer?.teamId !== undefined && targetPlayer.teamId === localPlayer.teamId);
+                         return isAlly;
+                     }
+                 }
+             };
+        }
+    }
+
+    // DATA LIBERATOR
+    if (name.includes('data liberator')) {
+        if (isDeployTrigger) {
+            return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1, isDeployAbility: true };
+        }
+    }
+
+    // CAUTIOUS AVENGER
+    if (name.includes('cautious avenger')) {
+        if (isDeployTrigger) {
+             return {
+                type: 'ENTER_MODE',
+                mode: 'SELECT_TARGET',
+                sourceCard: card,
+                sourceCoords: coords,
+                isDeployAbility: true,
+                payload: {
+                    tokenType: 'Aim',
+                    filter: (target: Card, r: number, c: number) => isLine(r, c, coords.row, coords.col)
+                }
+            };
+        }
+        if (phaseIndex === 0) { // Setup
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SELECT_TARGET',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     actionType: 'DESTROY',
+                     filter: (target: Card) => hasStatus(target, 'Aim')
+                 }
+             };
+        }
+    }
+
+    // VIGILANT SPOTTER
+    if (name.includes('vigilant spotter')) {
+        if (phaseIndex === 4) { // Commit
+            return {
+                type: 'CREATE_STACK',
+                tokenType: 'Revealed',
+                count: 1,
+                onlyFaceDown: true,
+                targetOwnerId: undefined, // Any player
+                excludeOwnerId: ownerId // Not self
+            };
+        }
+    }
+
+    // INVENTIVE MAKER
+    if (name.includes('inventive maker')) {
+        if (isDeployTrigger) {
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SPAWN_TOKEN',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 isDeployAbility: true,
+                 payload: { tokenName: 'Recon Drone' }
+             };
+        }
+        if (phaseIndex === 0) { // Setup
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             
+             return {
+                 type: 'OPEN_MODAL',
+                 mode: 'RETRIEVE_DEVICE',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {}
+             };
+        }
+    }
+
+    // RECON DRONE
+    if (name.includes('recon drone')) {
+        if (phaseIndex === 0) { // Setup
+            // Move to ANY empty cell
+            return {
+                type: 'ENTER_MODE',
+                mode: 'SELECT_CELL',
+                sourceCard: card,
+                sourceCoords: coords,
+                payload: { allowSelf: false, range: 'global' } 
+            };
+        }
+        if (phaseIndex === 4) { // Commit
+            // Reveal card in hand of adjacent OPPONENT card's owner
+            return {
+                type: 'ENTER_MODE',
+                mode: 'REVEAL_ENEMY',
+                sourceCard: card,
+                sourceCoords: coords,
+                payload: {
+                    // Select the adjacent unit whose owner we want to reveal. Must be opponent.
+                    filter: (target: Card, r: number, c: number) => 
+                        isAdjacent(r, c, coords.row, coords.col) &&
+                        target.ownerId !== ownerId
+                }
             }
         }
+    }
+
+    // --- OPTIMATES ---
+
+    // CENSOR
+    if (name.includes('censor')) {
+        // Deploy: Exploit any card
+        if (isDeployTrigger) {
+            return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1, isDeployAbility: true };
+        }
+        // Commit (Support): Swap 1 exploit for 1 stun
+        if (phaseIndex === 4) {
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+
+             return {
+                type: 'ENTER_MODE',
+                mode: 'CENSOR_SWAP',
+                sourceCard: card,
+                sourceCoords: coords,
+                payload: {
+                    filter: (target: Card) => hasStatus(target, 'Exploit', ownerId)
+                }
+            };
+        }
+    }
+    
+    // CENTURION (Optimates)
+    if (name.includes('centurion')) {
+        // Support => Setup (Phase 0)
+        if (phaseIndex === 0) {
+             if (hasStatus(card, 'Support', ownerId)) {
+                 return {
+                     type: 'ENTER_MODE',
+                     mode: 'SELECT_LINE_END',
+                     sourceCard: card,
+                     sourceCoords: coords,
+                     payload: { 
+                         actionType: 'CENTURION_BUFF',
+                         firstCoords: coords
+                     }
+                 };
+             }
+        }
+    }
+    
+    // FABER (Optimates)
+    if (name.includes('faber')) {
+        // Deploy: Spawn Walking Turret
+        if (isDeployTrigger) {
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SPAWN_TOKEN',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 isDeployAbility: true,
+                 payload: { tokenName: 'Walking Turret' }
+             };
+        }
+    }
+    
+    // PRINCEPS (Optimates)
+    if (name.includes('princeps')) {
+        // Deploy: Shield self, then Aim
+        if (isDeployTrigger) {
+             return { 
+                 type: 'ENTER_MODE', 
+                 mode: 'PRINCEPS_SHIELD_THEN_AIM', 
+                 sourceCard: card, 
+                 sourceCoords: coords, 
+                 isDeployAbility: true,
+                 payload: {} 
+             };
+        }
+        // Setup: Destroy a card with aim in a line.
+        if (phaseIndex === 0) {
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SELECT_TARGET',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     actionType: 'DESTROY',
+                     filter: (target: Card, r: number, c: number) => {
+                         // Must be in same line (row or col)
+                         if (!isLine(r, c, coords.row, coords.col)) return false;
+                         // Must have Aim owned by this player
+                         return hasStatus(target, 'Aim', ownerId);
+                     }
+                 }
+             }
+        }
+    }
+    
+    // IMMUNIS
+    if (name.includes('immunis')) {
+        if (isDeployTrigger) {
+            if (!hasStatus(card, 'Support', ownerId)) return null;
+            
+            // Check Discard Pile for Optimates Units
+            const player = gameState.players.find(p => p.id === ownerId);
+            const hasOptimates = player?.discard.some(c => 
+                (c.types?.includes('Optimates') || c.faction === 'Optimates' || c.deck === 'Optimates') &&
+                c.types?.includes('Unit')
+            );
+            
+            return {
+                type: 'OPEN_MODAL',
+                mode: 'IMMUNIS_RETRIEVE',
+                sourceCard: card,
+                sourceCoords: coords,
+                isDeployAbility: true,
+                payload: {
+                    filter: (r: number, c: number) => isAdjacent(r, c, coords.row, coords.col)
+                }
+            };
+        }
+    }
+    
+    // WALKING TURRET (Token)
+    if (name.includes('walking turret')) {
+        if (phaseIndex === 4) { // Commit
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             if (hasStatus(card, 'Shield')) return null;
+             return { type: 'ENTER_MODE', mode: 'WALKING_TURRET_SHIELD', sourceCard: card, sourceCoords: coords, payload: {} };
+        }
+    }
+
+    // --- FUSION ---
+    
+    // CODE KEEPER (Fusion)
+    if (name.includes('code keeper')) {
+        // Deploy: Exploit opponents with Threat (Owner's threat)
+        if (isDeployTrigger) {
+            return {
+                type: 'ENTER_MODE',
+                mode: 'SELECT_TARGET',
+                sourceCard: card,
+                sourceCoords: coords,
+                isDeployAbility: true,
+                payload: {
+                    tokenType: 'Exploit',
+                    filter: (target: Card) => target.ownerId !== ownerId && hasStatus(target, 'Threat', ownerId)
+                }
+            };
+        }
+        // Support => Commit: Move opponent with Exploit (Owner's exploit)
+        if (phaseIndex === 4) {
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SELECT_UNIT_FOR_MOVE',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     filter: (target: Card) => target.ownerId !== ownerId && hasStatus(target, 'Exploit', ownerId)
+                 }
+             };
+        }
+    }
+    
+    // DEVOUT SYNTHETIC (Fusion)
+    if (name.includes('devout synthetic')) {
+        // Deploy: Push adjacent (Same as Riot Agent)
+        if (isDeployTrigger) {
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'RIOT_PUSH', 
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 isDeployAbility: true,
+                 payload: {}
+             };
+        }
+        // Support => Setup: Destroy adjacent opponent with Threat OR Stun (Owner's)
+        if (phaseIndex === 0) { 
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SELECT_TARGET',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     actionType: 'DESTROY',
+                     filter: (target: Card, r: number, c: number) => {
+                         if (!isAdjacent(r, c, coords.row, coords.col)) return false;
+                         if (target.ownerId === ownerId) return false; // Opponent only
+                         return hasStatus(target, 'Threat', ownerId) || hasStatus(target, 'Stun', ownerId);
+                     }
+                 }
+             };
+        }
+    }
+    
+    // UNWAVERING INTEGRATOR (Fusion)
+    if (name.includes('unwavering integrator')) {
+        if (isDeployTrigger) { // Deploy
+            return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1, isDeployAbility: true };
+        }
+        if (phaseIndex === 0) { // Setup
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'INTEGRATOR_SCORE', // Instant effect
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {}
+             };
+        }
+    }
+    
+    // SIGNAL PROPHET (Fusion)
+    if (name.includes('signal prophet')) {
+        // Deploy: Exploit owner's cards with Support (Owner's support)
+        if (isDeployTrigger) {
+             return {
+                type: 'ENTER_MODE',
+                mode: 'SELECT_TARGET',
+                sourceCard: card,
+                sourceCoords: coords,
+                isDeployAbility: true,
+                payload: {
+                    tokenType: 'Exploit',
+                    filter: (target: Card) => target.ownerId === ownerId && hasStatus(target, 'Support', ownerId)
+                }
+            };
+        }
+        // Support => Commit: Move owner's card with Exploit (Owner's exploit)
+        if (phaseIndex === 4) {
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'SELECT_UNIT_FOR_MOVE',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     filter: (target: Card) => target.ownerId === ownerId && hasStatus(target, 'Exploit', ownerId)
+                 }
+             };
+        }
+    }
+    
+    // ZEALOUS MISSIONARY (Fusion)
+    if (name.includes('zealous missionary')) {
+        if (phaseIndex === 4) { // Commit
+             if (!hasStatus(card, 'Support', ownerId)) return null;
+             return {
+                 type: 'ENTER_MODE',
+                 mode: 'ZEALOUS_WEAKEN',
+                 sourceCard: card,
+                 sourceCoords: coords,
+                 payload: {
+                     filter: (target: Card) => hasStatus(target, 'Exploit', ownerId)
+                 }
+             };
+        }
+    }
+
+    // GENERIC ABILITY PARSING
+    // Check Phase 2 OR Resurrected for Deploy abilities
+    if (isDeployTrigger && card.ability.toLowerCase().includes('shield 1')) {
+        return { type: 'CREATE_STACK', tokenType: 'Shield', count: 1, isDeployAbility: true };
+    }
+    
+    if ((phaseIndex === 1 || phaseIndex === 3) && card.ability.toLowerCase().includes('stun 1')) {
+         return { type: 'CREATE_STACK', tokenType: 'Stun', count: 1 };
+    }
+
+    if ((phaseIndex === 1 || phaseIndex === 3) && card.ability.toLowerCase().includes('aim 1')) {
+        return { type: 'CREATE_STACK', tokenType: 'Aim', count: 1 };
     }
 
     return null;

@@ -1,7 +1,3 @@
-/**
- * @file This is the root component of the application, orchestrating the entire UI and game state.
- */
-
 import React, { useState, useMemo, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
 import { GameBoard } from './components/GameBoard';
 import { PlayerPanel } from './components/PlayerPanel';
@@ -22,9 +18,9 @@ import { useGameState } from './hooks/useGameState';
 import type { Player, Card, DragItem, ContextMenuItem, ContextMenuParams, CursorStackState, CardStatus, HighlightData, PlayerColor } from './types';
 import { DeckType, GameMode } from './types';
 import { STATUS_ICONS, STATUS_DESCRIPTIONS } from './constants';
-import { getCardAbilityAction, canActivateAbility } from './utils/autoAbilities';
+import { getCardAbilityAction, canActivateAbility, isLine, isAdjacent } from './utils/autoAbilities';
 import type { AbilityAction } from './utils/autoAbilities';
-import { decksData, countersDatabase } from './decks';
+import { decksData, countersDatabase } from './contentDatabase';
 import { validateTarget, calculateValidTargets, checkActionHasTargets } from './utils/targeting';
 
 /**
@@ -64,6 +60,7 @@ export default function App() {
     shufflePlayerDeck,
     addBoardCardStatus,
     removeBoardCardStatus,
+    removeBoardCardStatusByOwner,
     modifyBoardCardPower,
     addAnnouncedCardStatus,
     removeAnnouncedCardStatus,
@@ -91,6 +88,7 @@ export default function App() {
     transferStatus,
     transferAllCounters,
     recoverDiscardedCard,
+    resurrectDiscardedCard,
     spawnToken,
     scoreLine
   } = useGameState();
@@ -105,7 +103,7 @@ export default function App() {
   const [tokensModalAnchor, setTokensModalAnchor] = useState<{ top: number; left: number } | null>(null);
   const [countersModalAnchor, setCountersModalAnchor] = useState<{ top: number; left: number } | null>(null);
   const [isTeamAssignOpen, setTeamAssignOpen] = useState(false);
-  const [viewingDiscard, setViewingDiscard] = useState<{ player: Player; pickMode?: boolean } | null>(null);
+  const [viewingDiscard, setViewingDiscard] = useState<{ player: Player; pickConfig?: { filterType: string; action: 'recover' | 'resurrect'; targetCoords?: {row: number, col: number} } } | null>(null);
   const [viewingDeck, setViewingDeck] = useState<Player | null>(null);
   const [viewingCard, setViewingCard] = useState<{ card: Card; player?: Player } | null>(null);
   const [isListMode, setIsListMode] = useState(true);
@@ -269,7 +267,7 @@ export default function App() {
                                    cardIndex 
                                }, localPlayerId);
                                
-                               if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords);
+                               if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords); // Ability used is tracked at source
                                if (cursorStack.count > 1) {
                                    setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
                                } else {
@@ -416,7 +414,7 @@ export default function App() {
           }
           if (e.key === 'Escape') {
               if (abilityMode && abilityMode.sourceCoords && abilityMode.sourceCoords.row >= 0) {
-                  markAbilityUsed(abilityMode.sourceCoords);
+                  markAbilityUsed(abilityMode.sourceCoords, abilityMode.isDeployAbility);
               }
               if (cursorStack && cursorStack.sourceCoords) {
                   markAbilityUsed(cursorStack.sourceCoords);
@@ -433,7 +431,7 @@ export default function App() {
           if (cursorStack || playMode || abilityMode) {
               e.preventDefault();
               if (abilityMode && abilityMode.sourceCoords && abilityMode.sourceCoords.row >= 0) {
-                  markAbilityUsed(abilityMode.sourceCoords);
+                  markAbilityUsed(abilityMode.sourceCoords, abilityMode.isDeployAbility);
               }
               if (cursorStack && cursorStack.sourceCoords) {
                   markAbilityUsed(cursorStack.sourceCoords);
@@ -593,6 +591,63 @@ export default function App() {
       
       const action = getCardAbilityAction(card, gameState, localPlayerId, boardCoords);
       if (action) {
+          // IMMEDIATE ACTION: Princeps Deploy (Shield Self -> Then Aim)
+          if (action.mode === 'PRINCEPS_SHIELD_THEN_AIM') {
+                // 1. Apply Shield to self immediately
+                addBoardCardStatus(boardCoords, 'Shield', localPlayerId!);
+                
+                // 2. Mark ability as used (with deploy flag)
+                markAbilityUsed(boardCoords, true);
+
+                // 3. Enter Aim Mode
+                setAbilityMode({
+                    type: 'ENTER_MODE',
+                    mode: 'SELECT_TARGET',
+                    sourceCard: card,
+                    sourceCoords: boardCoords,
+                    payload: {
+                        tokenType: 'Aim',
+                        count: 1,
+                        filter: (target: Card) => {
+                            // Legal targets: cards with 'Threat' owned by THIS player
+                            return target.statuses?.some(s => s.type === 'Threat' && s.addedByPlayerId === localPlayerId) || false;
+                        }
+                    }
+                });
+                return;
+          }
+
+          // IMMEDIATE ACTION: Walking Turret Shield
+          if (action.mode === 'WALKING_TURRET_SHIELD') {
+                addBoardCardStatus(boardCoords, 'Shield', localPlayerId!);
+                markAbilityUsed(boardCoords, action.isDeployAbility);
+                return;
+          }
+
+          // IMMEDIATE ACTION: Integrator Score (Fusion)
+          if (action.mode === 'INTEGRATOR_SCORE') {
+               const gridSize = gameState.board.length;
+               const { row, col } = boardCoords;
+               let exploits = 0;
+               
+               // Count own exploits in line
+               for(let r = 0; r < gridSize; r++) {
+                   for(let c = 0; c < gridSize; c++) {
+                       const cell = gameState.board[r][c];
+                       if ((r === row || c === col) && cell.card) {
+                            exploits += cell.card.statuses?.filter(s => s.type === 'Exploit' && s.addedByPlayerId === localPlayerId).length || 0;
+                       }
+                   }
+               }
+               if (exploits > 0) {
+                   updatePlayerScore(localPlayerId!, exploits);
+               }
+               markAbilityUsed(boardCoords, action.isDeployAbility);
+               setNoTargetOverlay(boardCoords); // Flash to confirm action
+               setTimeout(() => setNoTargetOverlay(null), 500);
+               return;
+          }
+
           if (action.type === 'CREATE_STACK' && action.tokenType && action.count) {
               setCursorStack({ 
                   type: action.tokenType, 
@@ -603,13 +658,31 @@ export default function App() {
                   onlyOpponents: action.onlyOpponents,
                   onlyFaceDown: action.onlyFaceDown
               });
+              // Need to track if this stack came from a deploy ability to mark it properly on consumption
+              // However, cursorStack doesn't hold isDeployAbility.
+              // Solution: markAbilityUsed is called when stack is placed.
+              // We can pass the flag then, IF we know it came from deploy.
+              // Or just mark it now? No, if user cancels stack, ability shouldn't be used.
+              // We need to assume standard ability usage logic applies on target selection.
+              // For now, simple abilities are handled.
+              if (action.isDeployAbility) {
+                  // Mark immediately? No, user might cancel.
+                  // We need to check this on completion.
+                  // But simple stack creation via click -> ability consumed?
+                  // If I click "Threat Analyst" (Deploy: Exploit any), I get a stack.
+                  // If I cancel, I haven't used it.
+                  // So we need to pass this info.
+                  // HACK: We will mark it used when the first token is placed.
+              }
           } else if (action.type === 'ENTER_MODE') {
               const hasTargets = checkActionHasTargets(action, gameState, localPlayerId);
               
               if (!hasTargets) {
                   if (boardCoords.row >= 0) {
                       setNoTargetOverlay(boardCoords);
-                      markAbilityUsed(boardCoords); 
+                      // If no targets, we mark it used anyway if it's a "may" ability or mandatory?
+                      // The user requested: "After activation, even if valid targets are no... considered fulfilled".
+                      markAbilityUsed(boardCoords, action.isDeployAbility); 
                       setTimeout(() => setNoTargetOverlay(null), 750);
                   }
                   return;
@@ -619,11 +692,120 @@ export default function App() {
               if (action.mode === 'RETRIEVE_DEVICE') {
                    const player = gameState.players.find(p => p.id === localPlayerId);
                    if (player) {
-                       setViewingDiscard({ player, pickMode: true });
-                       if (boardCoords.row >= 0) markAbilityUsed(boardCoords);
+                       const hasDevices = player.discard.some(c => c.types?.includes('Device'));
+                       
+                       if (hasDevices) {
+                           setViewingDiscard({ 
+                               player, 
+                               pickConfig: { 
+                                   filterType: 'Device', 
+                                   action: 'recover'
+                               } 
+                           });
+                           if (boardCoords.row >= 0) markAbilityUsed(boardCoords, action.isDeployAbility);
+                       } else {
+                           // No target feedback
+                           if (boardCoords.row >= 0) {
+                                setNoTargetOverlay(boardCoords);
+                                markAbilityUsed(boardCoords, action.isDeployAbility);
+                                setTimeout(() => setNoTargetOverlay(null), 750);
+                           }
+                       }
+                   }
+              }
+              if (action.mode === 'IMMUNIS_RETRIEVE') {
+                   const player = gameState.players.find(p => p.id === localPlayerId);
+                   if (player) {
+                        setViewingDiscard({
+                            player,
+                            pickConfig: {
+                                filterType: 'Optimates',
+                                action: 'resurrect',
+                            }
+                        });
+                        setAbilityMode({
+                            type: 'ENTER_MODE',
+                            mode: 'IMMUNIS_RETRIEVE', 
+                            sourceCard: card,
+                            sourceCoords: boardCoords,
+                            isDeployAbility: action.isDeployAbility,
+                            payload: action.payload // Correctly pass filter payload
+                        });
                    }
               }
           }
+      }
+  };
+
+  const handleLineSelection = (coords: { row: number, col: number }) => {
+      if (!abilityMode) return;
+      const { mode, sourceCard, sourceCoords, payload, isDeployAbility } = abilityMode;
+
+      if (mode === 'SELECT_LINE_START') {
+          setAbilityMode({
+              type: 'ENTER_MODE',
+              mode: 'SELECT_LINE_END',
+              sourceCard,
+              sourceCoords,
+              isDeployAbility,
+              payload: {
+                  ...payload,
+                  firstCoords: coords
+              }
+          });
+          return;
+      }
+
+      if (mode === 'SELECT_LINE_END' && payload?.firstCoords) {
+          const { row: r1, col: c1 } = payload.firstCoords;
+          const { row: r2, col: c2 } = coords;
+
+          // Check if valid line (same row or same col)
+          if (r1 !== r2 && c1 !== c2) return; // Invalid selection
+
+          const actionType = payload.actionType;
+
+          if (actionType === 'CENTURION_BUFF' && sourceCard && sourceCoords) {
+               const gridSize = gameState.board.length;
+               let startR = 0, endR = gridSize - 1;
+               let startC = 0, endC = gridSize - 1;
+
+               // Define line bounds
+               if (r1 === r2) { // Row
+                   startR = endR = r1;
+               } else { // Col
+                   startC = endC = c1;
+               }
+
+               // Apply buff
+               for(let r = startR; r <= endR; r++) {
+                   for(let c = startC; c <= endC; c++) {
+                       const targetCard = gameState.board[r][c].card;
+                       // Check: Exists, Ally (Owner or Team), Not Self
+                       if (targetCard) {
+                           const isSelf = targetCard.id === sourceCard.id;
+                           const isOwner = targetCard.ownerId === localPlayerId;
+                           // Check team
+                           const localPlayer = gameState.players.find(p => p.id === localPlayerId);
+                           const targetPlayer = gameState.players.find(p => p.id === targetCard.ownerId);
+                           const isTeammate = localPlayer?.teamId !== undefined && targetPlayer?.teamId !== undefined && localPlayer.teamId === targetPlayer.teamId;
+
+                           if (!isSelf && (isOwner || isTeammate)) {
+                               modifyBoardCardPower({row: r, col: c}, 1);
+                           }
+                       }
+                   }
+               }
+               markAbilityUsed(sourceCoords, isDeployAbility);
+          }
+          else if (actionType === 'SCORE_LINE' || !actionType) { // Assuming Mobilization or legacy uses this
+               scoreLine(r1, c1, r2, c2, localPlayerId!);
+               if (sourceCard) {
+                   moveItem({ card: sourceCard, source: 'announced', playerId: localPlayerId! }, { target: 'discard', playerId: localPlayerId! });
+               }
+          }
+
+          setTimeout(() => setAbilityMode(null), 100);
       }
   };
 
@@ -636,24 +818,38 @@ export default function App() {
       // and DO NOT proceed to activateAbility.
       if (abilityMode && abilityMode.type === 'ENTER_MODE') {
           // Explicitly block interaction with the source card if clicked to prevent re-activation
-          if (abilityMode.sourceCard && abilityMode.sourceCard.id === card.id) {
+          if (abilityMode.sourceCard && abilityMode.sourceCard.id === card.id && abilityMode.mode !== 'SELECT_LINE_START') {
                return;
           }
 
-          const { mode, payload, sourceCard, sourceCoords } = abilityMode;
+          const { mode, payload, sourceCard, sourceCoords, isDeployAbility } = abilityMode;
+
+          if (mode === 'SELECT_LINE_START' || mode === 'SELECT_LINE_END') {
+              handleLineSelection(boardCoords);
+              return;
+          }
 
           if (mode === 'SELECT_TARGET' && payload.actionType === 'DESTROY') {
               if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) {
                   return;
               }
-              moveItem({ 
-                  card, 
-                  source: 'board', 
-                  boardCoords,
-                  bypassOwnershipCheck: true 
-              }, { target: 'discard', playerId: card.ownerId });
               
-              if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords);
+              // Check for Shield first
+              const hasShield = card.statuses?.some(s => s.type === 'Shield');
+              if (hasShield) {
+                  // Remove one shield token
+                  removeBoardCardStatus(boardCoords, 'Shield');
+              } else {
+                  // Proceed with destruction
+                  moveItem({ 
+                      card, 
+                      source: 'board', 
+                      boardCoords,
+                      bypassOwnershipCheck: true 
+                  }, { target: 'discard', playerId: card.ownerId });
+              }
+              
+              if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
               setTimeout(() => setAbilityMode(null), 100);
               return;
           }
@@ -669,7 +865,7 @@ export default function App() {
                   count: payload.count || 1 
               }, { target: 'board', boardCoords });
               
-              if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords);
+              if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
               setTimeout(() => setAbilityMode(null), 100);
               return;
           }
@@ -699,6 +895,7 @@ export default function App() {
                   mode: 'RIOT_MOVE',
                   sourceCard: abilityMode.sourceCard,
                   sourceCoords: abilityMode.sourceCoords,
+                  isDeployAbility: isDeployAbility,
                   payload: {
                        vacatedCoords: boardCoords 
                   }
@@ -708,7 +905,7 @@ export default function App() {
 
            if (mode === 'RIOT_MOVE' && sourceCoords && sourceCoords.row >= 0) {
                if (boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
-                   markAbilityUsed(sourceCoords);
+                   markAbilityUsed(sourceCoords, isDeployAbility);
                    setTimeout(() => setAbilityMode(null), 100); 
                }
                return;
@@ -721,7 +918,7 @@ export default function App() {
                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
                
                swapCards(sourceCoords, boardCoords);
-               markAbilityUsed(boardCoords);
+               markAbilityUsed(boardCoords, isDeployAbility); // Ability travels with card
                setTimeout(() => setAbilityMode(null), 100);
                return;
            }
@@ -732,7 +929,7 @@ export default function App() {
 
                if (card.statuses && card.statuses.length > 0) {
                    transferStatus(boardCoords, sourceCoords, card.statuses[0].type);
-                   markAbilityUsed(sourceCoords);
+                   markAbilityUsed(sourceCoords, isDeployAbility);
                    setTimeout(() => setAbilityMode(null), 100);
                }
                return;
@@ -743,7 +940,7 @@ export default function App() {
                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
 
                transferAllCounters(boardCoords, sourceCoords);
-               markAbilityUsed(sourceCoords);
+               markAbilityUsed(sourceCoords, isDeployAbility);
                setTimeout(() => setAbilityMode(null), 100);
                return;
            }
@@ -761,7 +958,50 @@ export default function App() {
                    onlyFaceDown: true, 
                    onlyOpponents: true 
                });
+               // Note: markAbilityUsed will be called by the stack placement logic
                setTimeout(() => setAbilityMode(null), 100);
+               return;
+           }
+
+           if (mode === 'CENSOR_SWAP' && sourceCoords && sourceCoords.row >= 0) {
+               if (payload.filter && !payload.filter(card)) return;
+               // Remove specifically the Exploit token owned by local player
+               removeBoardCardStatusByOwner(boardCoords, 'Exploit', localPlayerId!);
+               addBoardCardStatus(boardCoords, 'Stun', localPlayerId!);
+               markAbilityUsed(sourceCoords, isDeployAbility);
+               setTimeout(() => setAbilityMode(null), 100);
+               return;
+           }
+
+           if (mode === 'ZEALOUS_WEAKEN' && sourceCoords && sourceCoords.row >= 0) {
+               if (payload.filter && !payload.filter(card)) return;
+               modifyBoardCardPower(boardCoords, -1);
+               markAbilityUsed(sourceCoords, isDeployAbility);
+               setTimeout(() => setAbilityMode(null), 100);
+               return;
+           }
+
+           if (mode === 'CENTURION_BUFF' && sourceCoords && sourceCoords.row >= 0) {
+               // Legacy handler - kept for safety but logic moved to SELECT_LINE_START/END
+               markAbilityUsed(sourceCoords, isDeployAbility);
+               setTimeout(() => setAbilityMode(null), 100);
+               return;
+           }
+           
+           if (mode === 'SELECT_UNIT_FOR_MOVE' && sourceCoords && sourceCoords.row >= 0) {
+               if (payload.filter && !payload.filter(card)) return;
+               
+               // Transition to Cell Selection for the picked card
+               setAbilityMode({
+                   type: 'ENTER_MODE',
+                   mode: 'SELECT_CELL',
+                   sourceCard: card, // Use the target card as the source for the move
+                   sourceCoords: boardCoords,
+                   isDeployAbility: isDeployAbility,
+                   payload: {
+                       allowSelf: false // Usually we want to move to a different cell
+                   }
+               });
                return;
            }
            
@@ -779,7 +1019,7 @@ export default function App() {
       if (interactionLock.current) return;
 
       if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_TARGET') {
-          const { payload, sourceCoords } = abilityMode;
+          const { payload, sourceCoords, isDeployAbility } = abilityMode;
           
           if (payload.actionType === 'DESTROY') {
              if (payload.filter && !payload.filter(card)) {
@@ -794,7 +1034,7 @@ export default function App() {
                  bypassOwnershipCheck: true
              }, { target: 'discard', playerId: player.id });
              
-             if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords);
+             if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
              setTimeout(() => setAbilityMode(null), 100);
           }
       }
@@ -819,7 +1059,12 @@ export default function App() {
       if (interactionLock.current) return;
       if (!abilityMode || abilityMode.type !== 'ENTER_MODE') return;
 
-      const { mode, sourceCoords, sourceCard, payload } = abilityMode;
+      const { mode, sourceCoords, sourceCard, payload, isDeployAbility } = abilityMode;
+
+      if (mode === 'SELECT_LINE_START' || mode === 'SELECT_LINE_END') {
+          handleLineSelection(boardCoords);
+          return;
+      }
 
       if (mode === 'PATROL_MOVE' && sourceCoords && sourceCard && sourceCoords.row >= 0) {
           const isRow = boardCoords.row === sourceCoords.row;
@@ -832,7 +1077,7 @@ export default function App() {
 
           if (isRow || isCol) {
                moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
-               markAbilityUsed(boardCoords); 
+               markAbilityUsed(boardCoords, isDeployAbility); // Mark ability used at the NEW location (destination)
                setTimeout(() => setAbilityMode(null), 100);
           }
           return;
@@ -841,7 +1086,7 @@ export default function App() {
       if (mode === 'RIOT_MOVE' && sourceCoords && sourceCard && payload.vacatedCoords) {
           if (boardCoords.row === payload.vacatedCoords.row && boardCoords.col === payload.vacatedCoords.col) {
               moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
-              markAbilityUsed(boardCoords); 
+              markAbilityUsed(boardCoords, isDeployAbility); // Mark ability used at the NEW location
               setTimeout(() => setAbilityMode(null), 100);
           }
           return;
@@ -851,46 +1096,47 @@ export default function App() {
            const isAdj = Math.abs(boardCoords.row - sourceCoords.row) + Math.abs(boardCoords.col - sourceCoords.col) === 1;
            if (isAdj) {
                spawnToken(boardCoords, payload.tokenName, localPlayerId!);
-               markAbilityUsed(sourceCoords);
+               markAbilityUsed(sourceCoords, isDeployAbility);
                setTimeout(() => setAbilityMode(null), 100);
            }
            return;
       }
 
       if (mode === 'SELECT_CELL' && sourceCoords && sourceCard && sourceCoords.row >= 0) {
-           if (payload.allowSelf && boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
-                markAbilityUsed(sourceCoords);
-                setTimeout(() => setAbilityMode(null), 100);
-                return;
+           const isAdj = Math.abs(boardCoords.row - sourceCoords.row) + Math.abs(boardCoords.col - sourceCoords.col) === 1;
+           const isGlobal = payload.range === 'global';
+           
+           if (isAdj || isGlobal) {
+               if (payload.allowSelf && boardCoords.row === sourceCoords.row && boardCoords.col === sourceCoords.col) {
+                    // Cancel/Stay
+               } else {
+                   moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords, bypassOwnershipCheck: true }, { target: 'board', boardCoords });
+               }
+               
+               // Mark ability used on the CARD at its NEW location
+               // This prevents infinite moves because the card at target will get abilityUsedInPhase set
+               markAbilityUsed(boardCoords, isDeployAbility);
+               
+               setTimeout(() => setAbilityMode(null), 100);
+               return;
            }
-           moveItem({ card: sourceCard, source: 'board', boardCoords: sourceCoords }, { target: 'board', boardCoords });
-           markAbilityUsed(boardCoords);
-           setTimeout(() => setAbilityMode(null), 100);
            return;
       }
-      
-      if (mode === 'SELECT_LINE_START' && sourceCard) {
-          setAbilityMode({
-              type: 'ENTER_MODE',
-              mode: 'SELECT_LINE_END',
-              sourceCard,
-              payload: {
-                  firstCoords: boardCoords
-              }
-          });
-          return;
-      }
 
-      if (mode === 'SELECT_LINE_END' && sourceCard && payload.firstCoords) {
-          const { row: r1, col: c1 } = payload.firstCoords;
-          const { row: r2, col: c2 } = boardCoords;
-          
-          if (r1 === r2 || c1 === c2) {
-              scoreLine(r1, c1, r2, c2, localPlayerId!);
-              moveItem({ card: sourceCard, source: 'announced', playerId: localPlayerId! }, { target: 'discard', playerId: localPlayerId! });
-              setTimeout(() => setAbilityMode(null), 100);
+      // IMMUNIS
+      if (mode === 'IMMUNIS_RETRIEVE' && sourceCoords && sourceCoords.row >= 0) {
+          // Step 2: Select Cell (Card is already in payload if step 1 done)
+          if (payload.selectedCardIndex !== undefined && payload.filter && payload.filter(boardCoords.row, boardCoords.col)) {
+               resurrectDiscardedCard(localPlayerId!, payload.selectedCardIndex, boardCoords);
+               markAbilityUsed(sourceCoords, isDeployAbility);
+               setTimeout(() => setAbilityMode(null), 100);
+               return;
           }
-          return;
+          
+          // Step 1: Open Modal (if not already picking cell)
+          if (payload.selectedCardIndex === undefined) {
+               return;
+          }
       }
   };
 
@@ -1019,7 +1265,7 @@ export default function App() {
         const canControl = isOwner || isDummyCard;
 
         const isRevealedByRequest = card.statuses?.some(s => s.type === 'Revealed' && (s.addedByPlayerId === localPlayerId));
-        const isVisible = !card.isFaceDown || card.revealedTo === 'all' || (Array.isArray(card.revealedTo) && card.revealedTo.includes(localPlayerId)) || isRevealedByRequest;
+        const isVisible = !card.isFaceDown || card.revealedTo === 'all' || (Array.isArray(card.revealedTo) && card.revealedTo.includes(localPlayerId!)) || isRevealedByRequest;
 
         if (isVisible || (isOwner && card.isFaceDown)) {
             items.push({ label: 'View', isBold: true, onClick: () => setViewingCard({ card, player: owner }) });
@@ -1688,28 +1934,76 @@ export default function App() {
       {viewingDiscard && (() => {
           const playerInState = gameState.players.find(p => p.id === viewingDiscard.player.id);
           const currentCards = playerInState ? playerInState.discard : [];
-          const displayedCards = viewingDiscard.pickMode 
-            ? currentCards.filter(c => c.types?.includes('Device')) 
-            : currentCards;
+          
+          let displayedCards = currentCards;
+          let title = `${viewingDiscard.player.name}'s Discard Pile`;
+
+          if (viewingDiscard.pickConfig) {
+              const { filterType, action } = viewingDiscard.pickConfig;
+              
+              if (filterType === 'Device') {
+                  displayedCards = currentCards.filter(c => c.types?.includes('Device'));
+                  title += ' (Pick a Device)';
+              } else if (filterType === 'Optimates') {
+                  displayedCards = currentCards.filter(c => c.deck === DeckType.Optimates || c.faction === 'Optimates');
+                  title += ' (Pick an Optimates Unit)';
+              }
+          }
+
+          const onPick = (cardIndex: number) => {
+              const realIndex = currentCards.indexOf(displayedCards[cardIndex]);
+              if (realIndex > -1 && viewingDiscard.pickConfig) {
+                  const { action } = viewingDiscard.pickConfig;
+                  if (action === 'recover') {
+                       recoverDiscardedCard(viewingDiscard.player.id, realIndex);
+                       setViewingDiscard(null);
+                       if (abilityMode) setAbilityMode(null);
+                  } else if (action === 'resurrect') {
+                       if (abilityMode && abilityMode.mode === 'IMMUNIS_RETRIEVE') {
+                           setAbilityMode({
+                               ...abilityMode,
+                               payload: {
+                                   ...abilityMode.payload,
+                                   selectedCardIndex: realIndex,
+                               }
+                           });
+                           setViewingDiscard(null);
+                       }
+                  }
+              }
+          };
 
           return (
             <DiscardModal
               isOpen={!!viewingDiscard}
-              onClose={() => setViewingDiscard(null)}
-              title={`${viewingDiscard.player.name}'s Discard Pile ${viewingDiscard.pickMode ? '(Pick a Device)' : ''}`}
+              onClose={() => {
+                  setViewingDiscard(null);
+                  // If we were in a retrieval mode, cancel it if user closes modal without picking
+                  if (abilityMode && (abilityMode.mode === 'RETRIEVE_DEVICE' || abilityMode.mode === 'IMMUNIS_RETRIEVE')) {
+                      setAbilityMode(null);
+                  }
+              }}
+              title={title}
               player={viewingDiscard.player}
               cards={displayedCards}
               setDraggedItem={setDraggedItem}
               onCardContextMenu={(e, cardIndex) => openContextMenu(e, 'discardCard', { card: displayedCards[cardIndex], player: viewingDiscard.player, cardIndex })}
+              onCardClick={(cardIndex) => {
+                  // Allow single click selection if picking
+                  if (viewingDiscard.pickConfig) {
+                      onPick(cardIndex);
+                  }
+              }}
               onCardDoubleClick={(cardIndex) => {
-                  if (viewingDiscard.pickMode) {
+                  if (viewingDiscard.pickConfig) {
+                      // Picking also works with double click
+                      onPick(cardIndex);
+                  } else {
+                      // Standard view behavior
                       const realIndex = currentCards.indexOf(displayedCards[cardIndex]);
                       if (realIndex > -1) {
-                           recoverDiscardedCard(viewingDiscard.player.id, realIndex);
-                           setViewingDiscard(null); 
+                          handleDoubleClickPileCard(viewingDiscard.player, displayedCards[cardIndex], cardIndex, 'discard');
                       }
-                  } else {
-                      handleDoubleClickPileCard(viewingDiscard.player, displayedCards[cardIndex], cardIndex, 'discard');
                   }
               }}
               canInteract={(localPlayerId !== null && gameState.isGameStarted && (viewingDiscard.player.id === localPlayerId || !!viewingDiscard.player.isDummy))}

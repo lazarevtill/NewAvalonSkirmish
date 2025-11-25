@@ -80,6 +80,7 @@ export interface Card {
   allowedPanels?: string[]; // Controls visibility in UI panels (e.g. 'DECK_BUILDER', 'TOKEN_PANEL')
   enteredThisTurn?: boolean; // True if the card entered the battlefield during the current turn
   abilityUsedInPhase?: number; // Stores the phase index where the ability was last used
+  deployAbilityConsumed?: boolean; // True if the card's Deploy ability has already been used while on the board
 }
 
 /**

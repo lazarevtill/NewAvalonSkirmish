@@ -1,12 +1,12 @@
 /**
- * @file This file reads the master `decks.json` file and processes it into the data structures
+ * @file This file reads the master `contentDatabase.json` file and processes it into the data structures
  * used by the application. It serves as the single source of truth for all card and deck data
  * for both the client and the server.
  */
 
 import type { Card, CounterDefinition } from './types';
 import { DeckType } from './types';
-import rawJsonDataImport from './decks.json';
+import rawJsonDataImport from './contentDatabase.json';
 
 // --- Type assertion for the imported JSON data ---
 interface RawDecksJson {

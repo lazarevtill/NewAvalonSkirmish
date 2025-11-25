@@ -4,7 +4,7 @@
 
 import type { Card, DeckType, PlayerColor } from './types';
 import { DeckType as DeckTypeEnum } from './types';
-import { countersDatabase } from './decks';
+import { countersDatabase } from './contentDatabase';
 
 /**
  * A mapping of deck types to their thematic properties, like color and ID prefix.

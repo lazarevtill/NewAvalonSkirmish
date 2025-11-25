@@ -1,15 +1,11 @@
-
 /**
  * @file Renders a modal for creating and editing custom decks.
  */
-import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import type { CustomDeckFile, CustomDeckCard, Player, Card, ContextMenuItem } from '../types';
+import React, { useState, useMemo, useRef } from 'react';
+import type { CustomDeckFile, Player, Card } from '../types';
 import { DeckType } from '../types';
-import { getAllCards, getSelectableDecks, getCardDefinition, commandCardIds } from '../decks';
-import type { CardDefinition } from '../decks';
+import { getAllCards, getSelectableDecks, getCardDefinition, commandCardIds } from '../contentDatabase';
 import { Card as CardComponent } from './Card';
-import { Tooltip, CardTooltipContent } from './Tooltip';
-import { ContextMenu } from './ContextMenu';
 
 interface DeckBuilderModalProps {
   isOpen: boolean;
@@ -20,13 +16,6 @@ interface DeckBuilderModalProps {
 const allCards = getAllCards();
 const selectableFactions = getSelectableDecks();
 const MAX_DECK_SIZE = 100;
-
-interface ContextMenuProps {
-  x: number;
-  y: number;
-  items: ContextMenuItem[];
-  onClose: () => void;
-}
 
 /**
  * Validates the content of a loaded deck file.
@@ -62,336 +51,273 @@ const validateDeckData = (data: any): { isValid: true, deckFile: CustomDeckFile 
  */
 export const DeckBuilderModal: React.FC<DeckBuilderModalProps> = ({ isOpen, onClose, setViewingCard }) => {
   const [deckName, setDeckName] = useState('My Custom Deck');
-  const [deckCards, setDeckCards] = useState<Map<string, number>>(new Map());
-  
-  // Filters for the card library
-  const [searchText, setSearchText] = useState('');
-  const [factionFilter, setFactionFilter] = useState<string>('all');
-  const [powerFilter, setPowerFilter] = useState<string>('');
-  
-  // State for tooltips
-  const [tooltip, setTooltip] = useState<{ x: number, y: number, cardDef: CardDefinition } | null>(null);
-  const tooltipTimeoutRef = useRef<number | null>(null);
+  const [currentDeck, setCurrentDeck] = useState<Map<string, number>>(new Map());
+  const [selectedFactionFilter, setSelectedFactionFilter] = useState<string>('All');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // State for context menu
-  const [contextMenu, setContextMenu] = useState<ContextMenuProps | null>(null);
-  
-  const totalCardCount = useMemo(() => {
-    return Array.from(deckCards.values()).reduce((sum, count) => sum + count, 0);
-  }, [deckCards]);
+  const sortedCards = useMemo(() => {
+      let cards = allCards;
+      if (selectedFactionFilter !== 'All') {
+          cards = cards.filter(c => {
+              if (selectedFactionFilter === 'Command') {
+                  return commandCardIds.has(c.id) || c.card.types?.includes('Command');
+              }
+              // For standard factions
+              return c.card.faction === selectedFactionFilter;
+          });
+      }
+      return cards.sort((a, b) => a.card.name.localeCompare(b.card.name));
+  }, [selectedFactionFilter]);
 
-  const findFactionForCard = useCallback((cardId: string): DeckType => {
-      const cardDef = getCardDefinition(cardId);
-      if (cardDef && cardDef.faction && Object.values(DeckType).includes(cardDef.faction as DeckType)) {
-          return cardDef.faction as DeckType;
-      }
-      if (commandCardIds.has(cardId)) {
-          return DeckType.Command;
-      }
-      return DeckType.Custom;
-  }, []);
+  const totalCards = useMemo(() => {
+      let total = 0;
+      currentDeck.forEach(qty => total += qty);
+      return total;
+  }, [currentDeck]);
 
-  const filteredLibraryCards = useMemo(() => {
-    return allCards.filter(({ id, card }) => {
-      if (card.allowedPanels && !card.allowedPanels.includes('DECK_BUILDER')) {
-          return false;
+  const handleAddCard = (cardId: string) => {
+      if (totalCards >= MAX_DECK_SIZE) {
+          alert(`Deck cannot exceed ${MAX_DECK_SIZE} cards.`);
+          return;
       }
+      setCurrentDeck(prev => {
+          const newDeck = new Map(prev);
+          const currentQty = newDeck.get(cardId) || 0;
+          if (currentQty < 3) { // Limit 3 copies per card
+               newDeck.set(cardId, currentQty + 1);
+          }
+          return newDeck;
+      });
+  };
 
-      // Faction filter
-      if (factionFilter === 'command') {
-          if (!commandCardIds.has(id)) return false;
-      }
-      else if (factionFilter !== 'all') {
-         if (card.faction) {
-             if (card.faction !== factionFilter) return false;
-         } else {
-            const cardDeckFile = selectableFactions.find(f => f.cards.some(c => c.cardId === id));
-            if (!cardDeckFile || cardDeckFile.id !== factionFilter) {
-              return false;
-            }
-         }
-      }
-      // Power filter
-      if (powerFilter.trim()) {
-        const power = parseInt(powerFilter.trim(), 10);
-        if (!isNaN(power) && card.power !== power) {
-          return false;
-        }
-      }
-      // Text search
-      if (searchText.trim()) {
-        const lowerSearch = searchText.toLowerCase();
-        const inName = card.name.toLowerCase().includes(lowerSearch);
-        const inAbility = card.ability.toLowerCase().includes(lowerSearch);
-        if (!inName && !inAbility) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }, [searchText, factionFilter, powerFilter]);
+  const handleRemoveCard = (cardId: string) => {
+      setCurrentDeck(prev => {
+          const newDeck = new Map(prev);
+          const currentQty = newDeck.get(cardId) || 0;
+          if (currentQty > 1) {
+              newDeck.set(cardId, currentQty - 1);
+          } else {
+              newDeck.delete(cardId);
+          }
+          return newDeck;
+      });
+  };
 
-  const addCardToDeck = useCallback((cardId: string) => {
-    if (totalCardCount >= MAX_DECK_SIZE) return;
-    setDeckCards(prev => {
-      const newDeck = new Map(prev);
-      const currentQty = newDeck.get(cardId) || 0;
-      newDeck.set(cardId, currentQty + 1);
-      return newDeck;
-    });
-  }, [totalCardCount]);
-
-  const removeCardFromDeck = useCallback((cardId: string) => {
-    setDeckCards(prev => {
-      const newDeck = new Map(prev);
-      newDeck.delete(cardId);
-      return newDeck;
-    });
-  }, []);
-
-  const changeCardQuantity = useCallback((cardId: string, delta: number) => {
-    setDeckCards(prev => {
-      const newDeck = new Map(prev);
-      const currentQty = newDeck.get(cardId) || 0;
-      let newQty = currentQty + delta;
-      
-      const currentTotal = Array.from(newDeck.values()).reduce((sum, count) => sum + count, 0);
-      const projectedTotal = currentTotal + delta;
-
-      if (delta > 0 && projectedTotal > MAX_DECK_SIZE) {
-        newQty = currentQty + (MAX_DECK_SIZE - currentTotal);
+  const handleClearDeck = () => {
+      if (confirm('Are you sure you want to clear the current deck?')) {
+          setCurrentDeck(new Map());
+          setDeckName('My Custom Deck');
       }
+  };
 
-      if (newQty <= 0) {
-        newDeck.delete(cardId);
-      } else {
-        newDeck.set(cardId, newQty);
-      }
-      return newDeck;
-    });
-  }, []);
-  
   const handleSaveDeck = () => {
-    const cardsArray: CustomDeckCard[] = Array.from(deckCards.entries()).map(([cardId, quantity]) => ({ cardId, quantity }));
-    const deckFile: CustomDeckFile = { deckName, cards: cardsArray };
-    
-    const blob = new Blob([JSON.stringify(deckFile, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${deckName.replace(/ /g, '_')}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+      if (totalCards === 0) {
+          alert("Cannot save an empty deck.");
+          return;
+      }
+      
+      const deckData: CustomDeckFile = {
+          deckName: deckName.trim() || 'Untitled Deck',
+          cards: Array.from(currentDeck.entries()).map(([cardId, quantity]) => ({ cardId, quantity }))
+      };
+
+      const blob = new Blob([JSON.stringify(deckData, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${deckData.deckName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
   };
 
-  const handleLoadDeck = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        try {
-            const text = e.target?.result as string;
-            const data = JSON.parse(text);
-            const validationResult = validateDeckData(data);
-            
-            if ('error' in validationResult) {
-                alert(`Error loading deck: ${validationResult.error}`);
-            } else {
-                const { deckFile } = validationResult;
-                setDeckName(deckFile.deckName);
-                const newDeckMap = new Map<string, number>();
-                deckFile.cards.forEach(c => newDeckMap.set(c.cardId, c.quantity));
-                setDeckCards(newDeckMap);
-            }
-
-        } catch (error) {
-            alert(`Error reading file: ${error instanceof Error ? error.message : 'Invalid file format.'}`);
-        } finally {
-            if(event.target) event.target.value = '';
-        }
-    };
-    reader.readAsText(file);
+  const handleLoadDeckClick = () => {
+      fileInputRef.current?.click();
   };
 
-  const handleViewCard = (cardId: string, cardDef: CardDefinition) => {
-    const cardDeck = findFactionForCard(cardId);
-    const cardForDetailView: Card = {
-        ...cardDef,
-        id: `detail-${cardId}`,
-        deck: cardDeck,
-    };
-    setViewingCard({ card: cardForDetailView });
+  const handleFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = (e) => {
+          try {
+              const text = e.target?.result as string;
+              const json = JSON.parse(text);
+              const validation = validateDeckData(json);
+              
+              if (!validation.isValid) {
+                  alert((validation as { error: string }).error);
+                  return;
+              }
+
+              const { deckFile } = validation;
+              setDeckName(deckFile.deckName);
+              const newDeck = new Map<string, number>();
+              deckFile.cards.forEach(c => newDeck.set(c.cardId, c.quantity));
+              setCurrentDeck(newDeck);
+
+          } catch (err) {
+              alert("Failed to parse deck file.");
+          } finally {
+              if (event.target) event.target.value = '';
+          }
+      };
+      reader.readAsText(file);
   };
-  
-  const handleMouseEnter = useCallback((e: React.MouseEvent, cardDef: CardDefinition) => {
-    if (tooltipTimeoutRef.current) clearTimeout(tooltipTimeoutRef.current);
-    tooltipTimeoutRef.current = window.setTimeout(() => {
-        setTooltip({ x: e.clientX, y: e.clientY, cardDef });
-    }, 250);
-  }, []);
-
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    setTooltip(prev => prev ? { ...prev, x: e.clientX, y: e.clientY } : null);
-  }, []);
-
-  const handleMouseLeave = useCallback(() => {
-    if (tooltipTimeoutRef.current) clearTimeout(tooltipTimeoutRef.current);
-    tooltipTimeoutRef.current = null;
-    setTooltip(null);
-  }, []);
-  
-  useEffect(() => {
-    const closeMenu = () => setContextMenu(null);
-    window.addEventListener('click', closeMenu);
-    
-    const handleContextMenu = (e: MouseEvent) => {
-        if (!(e.target as HTMLElement).closest('[data-interactive]')) {
-             closeMenu();
-        }
-    };
-    window.addEventListener('contextmenu', handleContextMenu);
-
-    return () => {
-        window.removeEventListener('click', closeMenu);
-        window.removeEventListener('contextmenu', handleContextMenu);
-    };
-  }, []);
-
 
   if (!isOpen) return null;
 
   return (
-    <>
-      <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[101]" onClick={onClose}>
-        <div className="bg-gray-800 rounded-lg p-6 shadow-xl w-[95vw] h-[90vh] max-w-7xl flex flex-col gap-4" onClick={e => e.stopPropagation()}>
-          <div className="flex justify-between items-center flex-shrink-0">
-              <h2 className="text-3xl font-bold">Deck Builder</h2>
-              <button onClick={onClose} className="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded">Close</button>
-          </div>
+    <div className="fixed inset-0 bg-black bg-opacity-90 flex items-center justify-center z-50">
+       <div className="bg-gray-900 w-full h-full md:w-[95vw] md:h-[90vh] md:rounded-xl flex flex-col overflow-hidden shadow-2xl border border-gray-700">
+           {/* Header */}
+           <div className="bg-gray-800 p-4 border-b border-gray-700 flex justify-between items-center flex-shrink-0">
+               <div className="flex items-center gap-4">
+                   <h2 className="text-2xl font-bold text-white">Deck Builder</h2>
+                   <input 
+                      type="text" 
+                      value={deckName} 
+                      onChange={(e) => setDeckName(e.target.value)}
+                      className="bg-gray-700 text-white px-3 py-1 rounded border border-gray-600 focus:outline-none focus:border-indigo-500 font-bold"
+                      placeholder="Deck Name"
+                   />
+               </div>
+               <div className="flex items-center gap-2">
+                   <button onClick={handleClearDeck} className="px-4 py-2 bg-red-900 hover:bg-red-800 text-white rounded text-sm font-bold transition-colors">Clear</button>
+                   <button onClick={handleLoadDeckClick} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded text-sm font-bold transition-colors">Load</button>
+                   <input type="file" ref={fileInputRef} onChange={handleFileSelected} accept=".json" className="hidden" />
+                   <button onClick={handleSaveDeck} className="px-4 py-2 bg-green-700 hover:bg-green-600 text-white rounded text-sm font-bold transition-colors">Save</button>
+                   <div className="w-px h-8 bg-gray-600 mx-2"></div>
+                   <button onClick={onClose} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-sm font-bold transition-colors">Close</button>
+               </div>
+           </div>
 
-          <div className="flex-grow flex gap-6 min-h-0">
-              {/* Left Side: Current Deck */}
-              <div className="w-1/3 bg-gray-900 rounded-lg p-4 flex flex-col">
-                  <div className="flex-shrink-0 mb-4 space-y-3">
-                      <input 
-                          type="text"
-                          value={deckName}
-                          onChange={e => setDeckName(e.target.value)}
-                          placeholder="Deck Name"
-                          className="w-full bg-gray-700 border border-gray-600 text-white font-bold text-lg rounded-lg p-2 focus:ring-indigo-500 focus:border-indigo-500"
-                      />
-                      <div className="flex space-x-2">
-                          <button onClick={handleSaveDeck} className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-3 rounded">Save</button>
-                          <label className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-3 rounded cursor-pointer text-center">
-                              Load
-                              <input type="file" className="hidden" accept=".json" onChange={handleLoadDeck} />
-                          </label>
-                      </div>
-                      <div className={`text-center font-bold text-lg ${totalCardCount > MAX_DECK_SIZE ? 'text-red-500' : 'text-gray-300'}`}>
-                          Total Cards: {totalCardCount} / {MAX_DECK_SIZE}
-                      </div>
-                  </div>
-                  <div className="flex-grow overflow-y-auto pr-2 space-y-2">
-                      {Array.from(deckCards.entries()).map(([cardId, quantity]) => {
-                          const cardDef = getCardDefinition(cardId);
-                          if (!cardDef) return null;
-                          return (
-                              <div
-                                key={cardId}
-                                className="bg-gray-800 p-2 rounded flex items-center justify-between"
-                                onContextMenu={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  const items: ContextMenuItem[] = [
-                                      { label: 'View', onClick: () => handleViewCard(cardId, cardDef) },
-                                      { isDivider: true },
-                                      { label: 'Add to Deck', onClick: () => changeCardQuantity(cardId, 1), disabled: totalCardCount >= MAX_DECK_SIZE },
-                                      { label: 'Remove from Deck', onClick: () => changeCardQuantity(cardId, -1) },
-                                      { label: 'Remove all copies', onClick: () => removeCardFromDeck(cardId) },
-                                  ];
-                                  setContextMenu({ x: e.clientX, y: e.clientY, items, onClose: () => setContextMenu(null) });
-                                }}
-                                data-interactive="true"
-                              >
-                                  <span
-                                    className="flex-grow truncate"
-                                    title={cardDef.name}
-                                    onMouseEnter={(e) => handleMouseEnter(e, cardDef)}
-                                    onMouseMove={handleMouseMove}
-                                    onMouseLeave={handleMouseLeave}
-                                  >
-                                    {cardDef.name}
-                                  </span>
-                                  <div className="flex items-center space-x-2 flex-shrink-0">
-                                      <button onClick={() => changeCardQuantity(cardId, -1)} className="w-6 h-6 bg-gray-700 rounded">-</button>
-                                      <span className="font-mono w-6 text-center">{quantity}</span>
-                                      <button onClick={() => changeCardQuantity(cardId, 1)} className="w-6 h-6 bg-gray-700 rounded">+</button>
-                                      <button onClick={() => removeCardFromDeck(cardId)} className="w-6 h-6 bg-red-600 text-white rounded text-sm">X</button>
-                                  </div>
-                              </div>
-                          );
-                      })}
-                  </div>
-              </div>
-
-              {/* Right Side: Card Library */}
-              <div className="w-2/3 bg-gray-900 rounded-lg p-4 flex flex-col">
-                  <div className="flex-shrink-0 mb-4 flex gap-2 items-center">
-                      <select value={factionFilter} onChange={e => setFactionFilter(e.target.value)} className="bg-gray-700 border border-gray-600 rounded p-2">
-                          <option value="all">All Factions</option>
-                          {selectableFactions.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
-                          <option value="command">Command</option>
-                      </select>
-                      <input type="text" value={powerFilter} onChange={e => setPowerFilter(e.target.value)} placeholder="Power" className="bg-gray-700 border border-gray-600 rounded p-2 w-24" />
-                      <input type="text" value={searchText} onChange={e => setSearchText(e.target.value)} placeholder="Search name or ability..." className="bg-gray-700 border border-gray-600 rounded p-2 flex-grow" />
-                  </div>
-                  <div className="flex-grow overflow-y-auto pr-2">
-                      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
-                          {filteredLibraryCards.map(({ id, card }) => (
-                              <div
-                                  key={id}
-                                  className="relative group w-32 h-32"
-                                  data-interactive="true"
-                              >
-                                  <div className="w-full h-full">
-                                       <CardComponent card={{ ...card, id: `lib_${id}`, deck: findFactionForCard(id) }} isFaceUp={true} playerColorMap={new Map()} />
-                                  </div>
-                                  <div 
-                                      onClick={() => addCardToDeck(id)}
+           {/* Content */}
+           <div className="flex flex-grow overflow-hidden">
+               {/* Left: Library */}
+               <div className="flex-grow flex flex-col p-4 overflow-hidden border-r border-gray-700 bg-gray-900/50">
+                   <div className="mb-4 flex items-center gap-2">
+                       <label className="text-gray-400 font-bold text-sm">Filter:</label>
+                       <select 
+                          value={selectedFactionFilter} 
+                          onChange={(e) => setSelectedFactionFilter(e.target.value)}
+                          className="bg-gray-800 text-white border border-gray-600 rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-500"
+                       >
+                           <option value="All">All Factions</option>
+                           {selectableFactions.map(f => <option key={f.id} value={f.id}>{f.name}</option>)}
+                           <option value="Command">Command Cards</option>
+                       </select>
+                       <span className="ml-auto text-gray-500 text-xs">Right-click to view card details</span>
+                   </div>
+                   
+                   <div className="flex-grow overflow-y-auto pr-2">
+                       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
+                           {sortedCards.map(({id, card}) => {
+                               // Convert card definition to a full card object for the component
+                               // We need a dummy ID and deck type for rendering
+                               const displayCard: Card = {
+                                   ...card,
+                                   id: id,
+                                   deck: card.faction as DeckType || DeckType.Custom, 
+                                   ownerId: 0
+                               };
+                               
+                               return (
+                                   <div 
+                                      key={id} 
+                                      className="relative group cursor-pointer"
+                                      onClick={() => handleAddCard(id)}
                                       onContextMenu={(e) => {
                                           e.preventDefault();
-                                          e.stopPropagation();
-                                          const items: ContextMenuItem[] = [
-                                              { label: 'View', onClick: () => handleViewCard(id, card) },
-                                              { isDivider: true },
-                                              { label: 'Add to Deck', onClick: () => addCardToDeck(id), disabled: totalCardCount >= MAX_DECK_SIZE },
-                                          ];
-                                          setContextMenu({ x: e.clientX, y: e.clientY, items, onClose: () => setContextMenu(null) });
+                                          setViewingCard({ card: displayCard });
                                       }}
-                                      onMouseEnter={(e) => handleMouseEnter(e, card)}
-                                      onMouseMove={handleMouseMove}
-                                      onMouseLeave={handleMouseLeave}
-                                      className="absolute inset-0 bg-black bg-opacity-60 opacity-0 group-hover:opacity-100 flex items-center justify-center cursor-pointer transition-opacity"
-                                  >
-                                      <span className="text-white font-bold text-lg">Add to Deck</span>
-                                  </div>
-                              </div>
-                          ))}
-                      </div>
-                  </div>
-              </div>
-          </div>
-        </div>
-      </div>
-      {tooltip && (
-        <Tooltip x={tooltip.x} y={tooltip.y}>
-            <CardTooltipContent card={{...tooltip.cardDef, id: 'tooltip', deck: DeckType.Command}} />
-        </Tooltip>
-      )}
-      {contextMenu && <ContextMenu {...contextMenu} />}
-    </>
+                                   >
+                                       <div className="w-full aspect-square transition-transform duration-100 hover:scale-105 hover:shadow-lg hover:z-10">
+                                            <CardComponent 
+                                                card={displayCard} 
+                                                isFaceUp={true} 
+                                                playerColorMap={new Map()} 
+                                                disableTooltip={true} // Use custom tooltip or rely on right-click view
+                                            />
+                                       </div>
+                                       <div className="absolute bottom-0 left-0 right-0 bg-black/80 text-white text-xs text-center py-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                                           Add to Deck
+                                       </div>
+                                   </div>
+                               );
+                           })}
+                       </div>
+                   </div>
+               </div>
+
+               {/* Right: Current Deck */}
+               <div className="w-80 md:w-96 bg-gray-800 flex flex-col border-l border-gray-700 flex-shrink-0">
+                   <div className="p-4 bg-gray-800 border-b border-gray-600">
+                       <h3 className="text-xl font-bold text-white">Current Deck</h3>
+                       <p className={`text-sm font-bold mt-1 ${totalCards > MAX_DECK_SIZE ? 'text-red-500' : 'text-indigo-400'}`}>
+                           {totalCards} / {MAX_DECK_SIZE} Cards
+                       </p>
+                   </div>
+                   <div className="flex-grow overflow-y-auto p-2 space-y-2">
+                       {currentDeck.size === 0 && (
+                           <div className="text-center text-gray-500 mt-10">
+                               <p>Your deck is empty.</p>
+                               <p className="text-xs mt-2">Click cards on the left to add them.</p>
+                           </div>
+                       )}
+                       {Array.from(currentDeck.entries()).map(([cardId, quantity]) => {
+                           const cardDef = getCardDefinition(cardId);
+                           if (!cardDef) return null;
+                           
+                           const displayCard: Card = {
+                               ...cardDef,
+                               id: cardId,
+                               deck: cardDef.faction as DeckType || DeckType.Custom, 
+                               ownerId: 0
+                           };
+
+                           return (
+                               <div key={cardId} className="flex items-center bg-gray-700 rounded p-2 group hover:bg-gray-600 transition-colors select-none">
+                                   <div 
+                                      className="w-12 h-12 flex-shrink-0 mr-3 cursor-pointer"
+                                      onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          setViewingCard({ card: displayCard });
+                                      }}
+                                   >
+                                       <CardComponent card={displayCard} isFaceUp={true} playerColorMap={new Map()} disableTooltip={true} />
+                                   </div>
+                                   <div className="flex-grow min-w-0">
+                                       <div className="font-bold text-sm text-white truncate">{cardDef.name}</div>
+                                       <div className="text-xs text-gray-400 truncate">{cardDef.faction}</div>
+                                   </div>
+                                   <div className="flex items-center gap-2 ml-2">
+                                       <button 
+                                          onClick={() => handleRemoveCard(cardId)}
+                                          className="w-6 h-6 flex items-center justify-center bg-gray-800 hover:bg-red-900 text-gray-300 rounded text-sm font-bold"
+                                          title="Remove one"
+                                       >
+                                           -
+                                       </button>
+                                       <span className="font-bold text-white w-4 text-center">{quantity}</span>
+                                       <button 
+                                          onClick={() => handleAddCard(cardId)}
+                                          className="w-6 h-6 flex items-center justify-center bg-gray-800 hover:bg-green-900 text-gray-300 rounded text-sm font-bold"
+                                          title="Add one"
+                                          disabled={quantity >= 3}
+                                       >
+                                           +
+                                       </button>
+                                   </div>
+                               </div>
+                           );
+                       })}
+                   </div>
+               </div>
+           </div>
+       </div>
+    </div>
   );
 };

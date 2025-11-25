@@ -5,7 +5,7 @@
 import React from 'react';
 import type { DragItem, Card as CardType } from '../types';
 import { DeckType } from '../types';
-import { decksData } from '../decks';
+import { decksData } from '../contentDatabase';
 import { Card } from './Card';
 
 /**

@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom';
 import type { Player, DragItem, DropTarget, DeckType, PlayerColor, CustomDeckFile, Card } from '../types';
 import { DeckType as DeckTypeEnum } from '../types';
 import { PLAYER_POSITIONS, PLAYER_COLOR_NAMES, PLAYER_COLORS } from '../constants';
-import { getSelectableDecks, getCardDefinition } from '../decks';
+import { getSelectableDecks, getCardDefinition } from '../contentDatabase';
 import { Card as CardComponent } from './Card';
 import { CardTooltipContent } from './Tooltip';
 
