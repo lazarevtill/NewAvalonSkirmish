@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { JoinGameModal } from './JoinGameModal';
 import { DeckBuilderModal } from './DeckBuilderModal';
@@ -55,7 +54,7 @@ export const MainMenu: React.FC<MainMenuProps> = ({
             <div 
                 className="absolute inset-0 z-0 opacity-30"
                 style={{
-                    backgroundImage: 'url(https://res.cloudinary.com/dxxh6meej/image/upload/v1763368597/NA_bg_main_o5co6l.png)',
+                    backgroundImage: 'url(https://images.unsplash.com/photo-1614728853975-69c960c725af?q=80&w=1920&auto=format&fit=crop)',
                     backgroundSize: 'cover',
                     backgroundPosition: 'center'
                 }}

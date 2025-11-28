@@ -2,10 +2,6 @@
  * @file Defines the core data structures and types used throughout the application.
  */
 
-import { AbilityAction } from './utils/autoAbilities';
-
-export type { AbilityAction };
-
 /**
  * Enum representing the different playable deck factions.
  */
@@ -288,4 +284,38 @@ export interface CursorStackState {
  */
 export interface CommandContext {
     lastMovedCardCoords?: { row: number, col: number };
+    lastMovedCardId?: string; // To track power of moved card
 }
+
+/**
+ * Data passed to the Counter Selection Modal (Inspiration).
+ */
+export interface CounterSelectionData {
+    card: Card;
+    callbackAction: 'DRAW_REMOVED' | 'SCORE_REMOVED';
+}
+
+/**
+ * Represents a structured action for the auto-ability system.
+ */
+export type AbilityAction = {
+    type: 'CREATE_STACK' | 'ENTER_MODE' | 'OPEN_MODAL' | 'GLOBAL_AUTO_APPLY';
+    mode?: string;
+    tokenType?: string;
+    count?: number;
+    dynamicCount?: { factor: string; ownerId: number }; // For dynamic stack counts (e.g. Overwatch Reveal)
+    onlyFaceDown?: boolean;
+    onlyOpponents?: boolean;
+    targetOwnerId?: number;
+    excludeOwnerId?: number;
+    sourceCard?: Card;
+    sourceCoords?: { row: number, col: number };
+    payload?: any;
+    isDeployAbility?: boolean;
+    recordContext?: boolean; // If true, the result of this action (e.g. move destination) is saved
+    contextCheck?: 'ADJACENT_TO_LAST_MOVE'; // If set, validates targets based on saved context
+    requiredTargetStatus?: string;
+    mustBeAdjacentToSource?: boolean;
+    mustBeInLineWithSource?: boolean;
+    placeAllAtOnce?: boolean;
+};

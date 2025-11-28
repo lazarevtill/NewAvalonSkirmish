@@ -1,26 +1,4 @@
-import type { Card, GameState } from '../types';
-
-export type AbilityAction = {
-    type: 'CREATE_STACK' | 'ENTER_MODE' | 'OPEN_MODAL' | 'GLOBAL_AUTO_APPLY';
-    mode?: string;
-    tokenType?: string;
-    count?: number;
-    dynamicCount?: { factor: string; ownerId: number }; // For dynamic stack counts (e.g. Overwatch Reveal)
-    onlyFaceDown?: boolean;
-    onlyOpponents?: boolean;
-    targetOwnerId?: number;
-    excludeOwnerId?: number;
-    sourceCard?: Card;
-    sourceCoords?: { row: number, col: number };
-    payload?: any;
-    isDeployAbility?: boolean;
-    recordContext?: boolean; // If true, the result of this action (e.g. move destination) is saved
-    contextCheck?: 'ADJACENT_TO_LAST_MOVE'; // If set, validates targets based on saved context
-    requiredTargetStatus?: string;
-    mustBeAdjacentToSource?: boolean;
-    mustBeInLineWithSource?: boolean;
-    placeAllAtOnce?: boolean;
-};
+import type { Card, GameState, AbilityAction } from '../types';
 
 export const isLine = (r1: number, c1: number, r2: number, c2: number): boolean => {
     return r1 === r2 || c1 === c2;
@@ -67,8 +45,6 @@ export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPla
     if (!card.deployAbilityConsumed) {
         if (hasAbilityKeyword(abilityText, 'deploy:')) {
             // Check if Deploy part requires support (e.g. "Support => Deploy:")
-            // This is tricky if multiple abilities exist. We assume standard formatting.
-            // If "Support => Deploy" is present, check support.
             if (hasAbilityKeyword(abilityText, 'support ⇒ deploy:')) {
                 return hasStatus(card, 'Support', activeTurnPlayerId);
             }
@@ -86,7 +62,6 @@ export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPla
 
         if (phaseKeyword && hasAbilityKeyword(abilityText, phaseKeyword)) {
              // Check if THIS phase ability requires support
-             // We look for "Support => [PhaseKeyword]"
              if (hasAbilityKeyword(abilityText, `support ⇒ ${phaseKeyword}`)) {
                  return hasStatus(card, 'Support', activeTurnPlayerId);
              }
@@ -96,9 +71,6 @@ export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPla
 
     // Special Case for COMMAND cards (always usable during phases 1 and 3 if in hand/announced)
     if (card.deck === 'Command') {
-        // Valid phases for Commands: Main (1) and Commit (3) -> Wait, game phases are Setup(0), Main(1), Commit(2)?
-        // TURN_PHASES = ['Setup Phase', 'Main Phase', 'Commit Phase']; (0, 1, 2)
-        // Actually, Command cards can usually be played in Main or Commit phase.
         if (phaseIndex === 1 || phaseIndex === 2) return true;
     }
 
@@ -148,7 +120,6 @@ const getDeployAction = (
 ): AbilityAction | null => {
     const name = card.name.toLowerCase();
     
-    // Helper to check support locally for specific cards if needed
     const hasSup = hasStatus(card, 'Support', ownerId);
 
     // SYNCHROTECH
@@ -226,7 +197,6 @@ const getDeployAction = (
 
     // FUSION
     if (name.includes('code keeper')) {
-        // Automatic: Exploit all opponent cards with Threat (owned by me)
         return {
             type: 'GLOBAL_AUTO_APPLY',
             sourceCard: card,
@@ -245,7 +215,6 @@ const getDeployAction = (
         return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1 };
     }
     if (name.includes('signal prophet')) {
-        // Automatic: Exploit all MY cards with Support (owned by me)
         return {
             type: 'GLOBAL_AUTO_APPLY',
             sourceCard: card,
@@ -261,7 +230,7 @@ const getDeployAction = (
         return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1 };
     }
 
-    // Generic fallback if card has deploy keyword but not specific logic above
+    // Generic fallback
     if (card.ability.toLowerCase().includes('deploy:')) {
          if (card.ability.toLowerCase().includes('shield 1')) return { type: 'CREATE_STACK', tokenType: 'Shield', count: 1 };
          if (card.ability.toLowerCase().includes('stun 1')) return { type: 'CREATE_STACK', tokenType: 'Stun', count: 1 };
@@ -357,14 +326,6 @@ const getPhaseAction = (
         }
     }
 
-    // PHASE 1: MAIN (Act)
-    if (phaseIndex === 1) {
-        // Generic handler for Act keywords if any card has them.
-        if (hasAbilityKeyword(card.ability, 'act:')) {
-             // Implement specific Act abilities if added
-        }
-    }
-
     // PHASE 2: COMMIT
     if (phaseIndex === 2) {
         if (name.includes('ip dept agent')) {
@@ -390,8 +351,6 @@ const getPhaseAction = (
         }
         if (name.includes('threat analyst')) {
             if (!hasSup) return null;
-            
-            // Calculate total exploit tokens owned by this player on the board
             let totalExploits = 0;
             gameState.board.forEach(row => {
                 row.forEach(cell => {
@@ -400,9 +359,7 @@ const getPhaseAction = (
                     }
                 });
             });
-
-            if (totalExploits === 0) return null; // Nothing to reveal
-
+            if (totalExploits === 0) return null; 
             return { type: 'CREATE_STACK', tokenType: 'Revealed', count: totalExploits }; 
         }
         if (name.includes('reckless provocateur')) {
@@ -448,7 +405,6 @@ const getPhaseAction = (
                 sourceCard: card,
                 sourceCoords: coords,
                 payload: {
-                    // Target: Opponent card with Exploit
                     filter: (target: Card) => target.ownerId !== ownerId && hasStatus(target, 'Exploit', ownerId)
                 }
             };
@@ -461,7 +417,6 @@ const getPhaseAction = (
                 sourceCard: card,
                 sourceCoords: coords,
                 payload: {
-                    // Target: Own card with Exploit
                     filter: (target: Card) => target.ownerId === ownerId && hasStatus(target, 'Exploit', ownerId)
                 }
             };

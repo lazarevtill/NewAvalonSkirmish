@@ -47,9 +47,11 @@ export const deckFiles = df;
 export const commandCardIds = new Set([
     'overwatch',
     'repositioning',
+    'tacticalManeuver',
     'mobilization',
     'inspiration',
     'dataInterception',
+    'falseOrders'
 ]);
 
 type DecksData = Record<string, Card[]>;
@@ -85,6 +87,7 @@ function buildDecksData(): DecksData {
                         ...cardDef,
                         deck: DeckType.Command,
                         id: `CMD_${cardKey}`,
+                        baseId: deckEntry.cardId, // Set baseId for localization
                         faction: cardDef.faction || 'Command',
                     });
                 } else {
@@ -92,6 +95,7 @@ function buildDecksData(): DecksData {
                         ...cardDef,
                         deck: deckFile.id,
                         id: `${deckFile.id.substring(0, 3).toUpperCase()}_${cardKey}_${i + 1}`,
+                        baseId: deckEntry.cardId, // Set baseId for localization
                         faction: cardDef.faction || deckFile.id,
                     });
                 }
@@ -103,7 +107,7 @@ function buildDecksData(): DecksData {
 
     // Add the special "Tokens" deck, which is built from the token database.
     // Explicitly ensures that all tokens have the 'Device' type added to their list.
-    builtDecks[DeckType.Tokens] = Array.from(tokenDatabase.values()).map(tokenDef => {
+    builtDecks[DeckType.Tokens] = Array.from(tokenDatabase.entries()).map(([tokenId, tokenDef]) => {
          const types = tokenDef.types ? [...tokenDef.types] : ['Unit'];
          if (!types.includes('Device')) {
              types.push('Device');
@@ -111,6 +115,7 @@ function buildDecksData(): DecksData {
          
          return {
              id: `TKN_${tokenDef.name.toUpperCase().replace(/\s/g, '_')}`,
+             baseId: tokenId, // Set baseId for localization
              deck: DeckType.Tokens,
              name: tokenDef.name,
              imageUrl: tokenDef.imageUrl,

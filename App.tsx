@@ -16,20 +16,20 @@ import { RulesModal } from './components/RulesModal';
 import { ContextMenu } from './components/ContextMenu';
 import { CommandModal } from './components/CommandModal';
 import { MainMenu } from './components/MainMenu';
-import { RoundEndModal } from './components/RoundEndModal'; // NEW IMPORT
+import { RoundEndModal } from './components/RoundEndModal'; 
+import { CounterSelectionModal } from './components/CounterSelectionModal';
 import { useGameState } from './hooks/useGameState';
 import { useAppAbilities } from './hooks/useAppAbilities';
-import type { Player, Card, DragItem, ContextMenuItem, ContextMenuParams, CursorStackState, CardStatus, HighlightData, PlayerColor, FloatingTextData, CommandContext } from './types';
+import { useAppCommand } from './hooks/useAppCommand';
+import type { Player, Card, DragItem, ContextMenuItem, ContextMenuParams, CursorStackState, CardStatus, HighlightData, PlayerColor, FloatingTextData, CommandContext, CounterSelectionData } from './types';
+import { AbilityAction } from './types';
 import { DeckType, GameMode } from './types';
 import { STATUS_ICONS, STATUS_DESCRIPTIONS } from './constants';
-import { canActivateAbility, AbilityAction } from './utils/autoAbilities';
+import { canActivateAbility } from './utils/autoAbilities';
 import { countersDatabase } from './contentDatabase';
 import { validateTarget, calculateValidTargets } from './utils/targeting';
 import { useLanguage } from './contexts/LanguageContext';
 
-/**
- * The main application component.
- */
 export default function App() {
   const { t } = useLanguage();
   const {
@@ -83,7 +83,7 @@ export default function App() {
     forceReconnect,
     triggerHighlight,
     latestHighlight,
-    latestFloatingTexts, // Updated to handle batch array
+    latestFloatingTexts, 
     nextPhase,
     prevPhase,
     setPhase,
@@ -96,17 +96,20 @@ export default function App() {
     resurrectDiscardedCard,
     spawnToken,
     scoreLine,
-    confirmRoundEnd // New hook function
+    confirmRoundEnd 
   } = useGameState();
 
-  // ... (State hooks omitted, unchanged) ...
   const [isJoinModalOpen, setJoinModalOpen] = useState(false);
   const [isDeckBuilderOpen, setDeckBuilderOpen] = useState(false);
   const [isSettingsModalOpen, setSettingsModalOpen] = useState(false);
   const [isTokensModalOpen, setTokensModalOpen] = useState(false);
   const [isCountersModalOpen, setCountersModalOpen] = useState(false);
   const [isRulesModalOpen, setRulesModalOpen] = useState(false);
+  
+  // Command & Ability State
   const [commandModalCard, setCommandModalCard] = useState<Card | null>(null);
+  const [counterSelectionData, setCounterSelectionData] = useState<CounterSelectionData | null>(null);
+  
   const [tokensModalAnchor, setTokensModalAnchor] = useState<{ top: number; left: number } | null>(null);
   const [countersModalAnchor, setCountersModalAnchor] = useState<{ top: number; left: number } | null>(null);
   const [isTeamAssignOpen, setTeamAssignOpen] = useState(false);
@@ -139,14 +142,14 @@ export default function App() {
   const cursorFollowerRef = useRef<HTMLDivElement>(null);
   const lastClickPos = useRef<{x: number, y: number} | null>(null);
   const [highlight, setHighlight] = useState<HighlightData | null>(null);
-  const [activeFloatingTexts, setActiveFloatingTexts] = useState<FloatingTextData[]>([]); // Track floating texts
+  const [activeFloatingTexts, setActiveFloatingTexts] = useState<FloatingTextData[]>([]); 
   const [isAutoAbilitiesEnabled, setIsAutoAbilitiesEnabled] = useState(true);
   const [abilityMode, setAbilityMode] = useState<AbilityAction | null>(null);
-  const [actionQueue, setActionQueue] = useState<AbilityAction[]>([]); // Queue for command sequences
+  const [actionQueue, setActionQueue] = useState<AbilityAction[]>([]); 
   const [validTargets, setValidTargets] = useState<{row: number, col: number}[]>([]);
   const [validHandTargets, setValidHandTargets] = useState<{playerId: number, cardIndex: number}[]>([]);
   const [noTargetOverlay, setNoTargetOverlay] = useState<{row: number, col: number} | null>(null);
-  const [commandContext, setCommandContext] = useState<CommandContext>({}); // Context for multi-step actions
+  const [commandContext, setCommandContext] = useState<CommandContext>({}); 
   const mousePos = useRef({ x: 0, y: 0 });
   const leftPanelRef = useRef<HTMLDivElement>(null);
   const boardContainerRef = useRef<HTMLDivElement>(null);
@@ -154,10 +157,26 @@ export default function App() {
   
   const interactionLock = useRef(false);
 
-  // Extract Ability Handlers to hook
-  const { 
+  // Hook for Command Logic
+  const {
       playCommandCard,
       handleCommandConfirm,
+      handleCounterSelectionConfirm
+  } = useAppCommand({
+      gameState,
+      localPlayerId,
+      setActionQueue,
+      setCommandContext,
+      setCommandModalCard,
+      setCounterSelectionData,
+      moveItem,
+      drawCard,
+      updatePlayerScore,
+      removeBoardCardStatus
+  });
+
+  // Hook for General Abilities
+  const { 
       activateAbility,
       handleLineSelection,
       handleBoardCardClick,
@@ -171,13 +190,12 @@ export default function App() {
       setAbilityMode,
       cursorStack,
       setCursorStack,
-      setActionQueue,
       commandContext,
       setCommandContext,
-      setCommandModalCard,
       setViewingDiscard,
       setNoTargetOverlay,
       setPlayMode,
+      setCounterSelectionData,
       interactionLock,
       moveItem,
       drawCard,
@@ -194,8 +212,7 @@ export default function App() {
       modifyBoardCardPower,
       addBoardCardStatus,
       removeBoardCardStatus,
-      removeBoardCardStatusByOwner,
-      requestCardReveal
+      removeBoardCardStatusByOwner
   });
 
   const activePlayerCount = useMemo(() => gameState.players.filter(p => !p.isDummy && !p.isDisconnected).length, [gameState.players]);
@@ -214,15 +231,11 @@ export default function App() {
 
   const isTargetingMode = !!abilityMode || !!cursorStack;
 
-  // --- Auto-Enter Scoring Mode on Phase Transition ---
   useEffect(() => {
       if (gameState.isScoringStep && isAutoAbilitiesEnabled && !abilityMode) {
           const activePid = gameState.activeTurnPlayerId;
-          // If local player is active OR local player is controlling active Dummy
           if (activePid !== undefined && (activePid === localPlayerId || gameState.players.find(p => p.id === activePid)?.isDummy)) {
-              // Find Last Played Card
               let lastPlayedCoords: {row: number, col: number} | null = null;
-              
               gameState.board.some((row, r) => {
                   return row.some((cell, c) => {
                       if (cell.card && cell.card.statuses?.some(s => s.type === 'LastPlayed' && s.addedByPlayerId === activePid)) {
@@ -236,16 +249,14 @@ export default function App() {
               if (lastPlayedCoords) {
                   setAbilityMode({
                       type: 'ENTER_MODE',
-                      mode: 'SCORE_LAST_PLAYED_LINE', // Special mode
+                      mode: 'SCORE_LAST_PLAYED_LINE', 
                       sourceCoords: lastPlayedCoords,
                       payload: {}
                   });
               } else {
-                  // Fallback: Allow selecting any line if no card marked (e.g. destroyed)
-                  // Or skip? For flexibility, allow selection of any line.
                   setAbilityMode({
                       type: 'ENTER_MODE',
-                      mode: 'SELECT_LINE_END', // Use generic line selection
+                      mode: 'SELECT_LINE_END', 
                       payload: { actionType: 'SCORE_LINE' }
                   });
               }
@@ -253,8 +264,6 @@ export default function App() {
       }
   }, [gameState.isScoringStep, isAutoAbilitiesEnabled, gameState.activeTurnPlayerId, localPlayerId, gameState.board, abilityMode]);
 
-
-  // ... (Layout effects omitted, unchanged) ...
   useEffect(() => {
       const checkListMode = () => {
           const savedMode = localStorage.getItem('ui_list_mode');
@@ -318,13 +327,11 @@ export default function App() {
       };
   }, [cursorStack, abilityMode]);
 
-  // ... (Action Queue Processing, mouseup handlers omitted - unchanged) ...
   useEffect(() => {
       if (actionQueue.length > 0 && !abilityMode && !cursorStack) {
           const nextAction = actionQueue[0];
           setActionQueue(prev => prev.slice(1));
 
-          // Helper to calculate count based on factor (e.g. 'Aim') dynamically
           const calculateDynamicCount = (factor: string, ownerId: number) => {
               let count = 0;
               if (factor === 'Aim') {
@@ -344,9 +351,9 @@ export default function App() {
           };
 
           if (nextAction.type === 'GLOBAL_AUTO_APPLY') {
-              // 1. Cleanup Command: Move card to discard
               if (nextAction.payload?.cleanupCommand && nextAction.sourceCard) {
                    const card = nextAction.sourceCard;
+                   if (card.id === 'dummy') return; 
                    moveItem({ 
                        card, 
                        source: 'announced', 
@@ -356,7 +363,6 @@ export default function App() {
                        playerId: card.ownerId 
                    });
               }
-              // 2. Dynamic Resource (e.g. Draw per Aim)
               else if (nextAction.payload?.dynamicResource) {
                   const { type, factor, ownerId } = nextAction.payload.dynamicResource;
                   const count = calculateDynamicCount(factor, ownerId);
@@ -364,11 +370,9 @@ export default function App() {
                       for(let i=0; i<count; i++) drawCard(ownerId);
                   }
               }
-              // 3. Static Resource
               else if (nextAction.payload?.resourceChange) {
                   const { draw, score } = nextAction.payload.resourceChange;
-                  // Fix: Commands played by Dummies or others need correct resource application
-                  const activePlayerId = gameState.activeTurnPlayerId; 
+                  const activePlayerId = nextAction.sourceCard?.ownerId || gameState.activeTurnPlayerId; 
                   if (activePlayerId !== undefined) {
                       if (draw) {
                           const count = typeof draw === 'number' ? draw : 1;
@@ -379,8 +383,35 @@ export default function App() {
                       }
                   }
               }
+              else if (nextAction.payload?.contextReward && nextAction.sourceCard) {
+                  // e.g. 'DRAW_MOVED_POWER'
+                  const rewardType = nextAction.payload.contextReward;
+                  let amount = 0;
+                  
+                  // Find the moved card from context
+                  // Note: Tactical Maneuver stored it in lastMovedCardCoords/lastMovedCardId
+                  if (commandContext.lastMovedCardCoords) {
+                      const { row, col } = commandContext.lastMovedCardCoords;
+                      const card = gameState.board[row][col].card;
+                      if (card) {
+                          amount = Math.max(0, card.power + (card.powerModifier || 0));
+                      }
+                  }
+
+                  if (amount > 0) {
+                      const playerId = nextAction.sourceCard.ownerId!;
+                      if (rewardType === 'DRAW_MOVED_POWER' || rewardType === 'DRAW_EQUAL_POWER') {
+                          for(let i=0; i<amount; i++) drawCard(playerId);
+                      } else if (rewardType === 'SCORE_MOVED_POWER') {
+                          updatePlayerScore(playerId, amount);
+                      }
+                  }
+                  
+                  if (rewardType === 'STUN_MOVED_UNIT' && commandContext.lastMovedCardCoords) {
+                      addBoardCardStatus(commandContext.lastMovedCardCoords, 'Stun', nextAction.sourceCard.ownerId!);
+                  }
+              }
           } else if (nextAction.type === 'CREATE_STACK') {
-              // 4. Dynamic Count for Stack (e.g. Reveal per Aim)
               let finalCount = nextAction.count || 1;
               if (nextAction.dynamicCount) {
                   finalCount = calculateDynamicCount(nextAction.dynamicCount.factor, nextAction.dynamicCount.ownerId);
@@ -393,20 +424,22 @@ export default function App() {
                       isDragging: false, 
                       sourceCoords: nextAction.sourceCoords,
                       excludeOwnerId: nextAction.excludeOwnerId,
-                      onlyOpponents: nextAction.onlyOpponents,
+                      // For command cards (targetOwnerId: -1 means opponent)
+                      onlyOpponents: nextAction.onlyOpponents || (nextAction.targetOwnerId === -1), 
                       onlyFaceDown: nextAction.onlyFaceDown,
                       isDeployAbility: nextAction.isDeployAbility,
                       requiredTargetStatus: nextAction.requiredTargetStatus,
                       mustBeAdjacentToSource: nextAction.mustBeAdjacentToSource,
                       mustBeInLineWithSource: nextAction.mustBeInLineWithSource,
-                      placeAllAtOnce: nextAction.placeAllAtOnce
+                      placeAllAtOnce: nextAction.placeAllAtOnce,
+                      targetOwnerId: nextAction.targetOwnerId
                   });
               }
           } else {
               setAbilityMode(nextAction);
           }
       }
-  }, [actionQueue, abilityMode, cursorStack, localPlayerId, drawCard, updatePlayerScore, gameState.activeTurnPlayerId, gameState.board, moveItem]);
+  }, [actionQueue, abilityMode, cursorStack, localPlayerId, drawCard, updatePlayerScore, gameState.activeTurnPlayerId, gameState.board, moveItem, commandContext, addBoardCardStatus]);
 
   useEffect(() => {
       const handleGlobalMouseUp = (e: MouseEvent) => {
@@ -424,14 +457,30 @@ export default function App() {
                   const targetCard = targetPlayer?.hand[cardIndex];
 
                   if (targetPlayer && targetCard) {
+                      // Apply constraints from cursorStack to validateTarget
+                      const constraints = {
+                          targetOwnerId: cursorStack.targetOwnerId,
+                          excludeOwnerId: cursorStack.excludeOwnerId,
+                          onlyOpponents: cursorStack.onlyOpponents || (cursorStack.targetOwnerId === -1),
+                          onlyFaceDown: cursorStack.onlyFaceDown,
+                          requiredTargetStatus: cursorStack.requiredTargetStatus,
+                          tokenType: cursorStack.type // Pass type for unique checks
+                      };
+
                       const isValid = validateTarget(
                           { card: targetCard, ownerId: playerId, location: 'hand' },
-                          cursorStack,
+                          constraints,
                           localPlayerId,
                           gameState.players
                       );
+                      
                       if (!isValid) return;
                       
+                      // targetOwnerId -2 means "Moved Card Owner" (from CommandContext)
+                      if (cursorStack.targetOwnerId === -2) {
+                          // Handled in getCommandAction logic usually, but here we validate actual ID
+                      }
+
                       if (cursorStack.type === 'Revealed' && playerId !== localPlayerId && !targetPlayer.isDummy) {
                            if (localPlayerId !== null) {
                                requestCardReveal({ source: 'hand', ownerId: playerId, cardIndex }, localPlayerId);
@@ -475,26 +524,55 @@ export default function App() {
                   const targetCard = gameState.board[row][col].card;
                   
                   if (targetCard && targetCard.ownerId !== undefined) {
+                      const constraints = {
+                          targetOwnerId: cursorStack.targetOwnerId,
+                          excludeOwnerId: cursorStack.excludeOwnerId,
+                          onlyOpponents: cursorStack.onlyOpponents || (cursorStack.targetOwnerId === -1),
+                          onlyFaceDown: cursorStack.onlyFaceDown,
+                          requiredTargetStatus: cursorStack.requiredTargetStatus,
+                          mustBeAdjacentToSource: cursorStack.mustBeAdjacentToSource,
+                          mustBeInLineWithSource: cursorStack.mustBeInLineWithSource,
+                          sourceCoords: cursorStack.sourceCoords,
+                          tokenType: cursorStack.type
+                      };
+
                       const isValid = validateTarget(
                           { card: targetCard, ownerId: targetCard.ownerId, location: 'board', boardCoords: { row, col } },
-                          cursorStack,
+                          constraints,
                           localPlayerId,
                           gameState.players
                       );
                       if (!isValid) return;
+                      
                       const targetPlayer = gameState.players.find(p => p.id === targetCard.ownerId);
+                      // If placing 'Revealed' token on opponent's face down card or allowed revealed target
+                      // Use standard request logic if needed, OR just apply token if card is already technically visible to logic but needs token.
+                      // For board cards, 'Revealed' token makes them visible.
                       if (cursorStack.type === 'Revealed' && targetCard.ownerId !== localPlayerId && !targetPlayer?.isDummy) {
-                           if (localPlayerId !== null) {
-                               requestCardReveal({ source: 'board', ownerId: targetCard.ownerId, boardCoords: { row, col } }, localPlayerId);
-                               if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
-                               if (cursorStack.count > 1) {
-                                   setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
-                               } else {
-                                   setCursorStack(null);
+                           // If board card is face down, we request reveal.
+                           // If board card is face up (visible to owner), we just add token so we can see it.
+                           if (targetCard.isFaceDown) {
+                               if (localPlayerId !== null) {
+                                   requestCardReveal({ source: 'board', ownerId: targetCard.ownerId, boardCoords: { row, col } }, localPlayerId);
                                }
-                               interactionLock.current = true;
-                               setTimeout(() => { interactionLock.current = false; }, 300);
+                           } else {
+                               // Apply token directly
+                               handleDrop({
+                                  card: { id: `stack`, deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                                  source: 'counter_panel',
+                                  statusType: cursorStack.type,
+                                  count: 1
+                               }, { target: 'board', boardCoords: { row, col }});
                            }
+                           
+                           if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
+                           if (cursorStack.count > 1) {
+                               setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
+                           } else {
+                               setCursorStack(null);
+                           }
+                           interactionLock.current = true;
+                           setTimeout(() => { interactionLock.current = false; }, 300);
                            return;
                       }
                   }
@@ -574,6 +652,7 @@ export default function App() {
               setCommandModalCard(null);
               setActionQueue([]);
               setCommandContext({});
+              setCounterSelectionData(null);
           }
       };
       
@@ -590,8 +669,14 @@ export default function App() {
               setPlayMode(null);
               setAbilityMode(null);
               setViewingDiscard(null);
-              setActionQueue([]);
-              setCommandContext({});
+              
+              // NOTE: Do NOT clear Action Queue or Context on right-click cancel.
+              // This allows multi-step commands (like "Target -> Discard") to proceed to the next step
+              // automatically via the actionQueue effect when the current mode is cancelled.
+              // setActionQueue([]); 
+              // setCommandContext({});
+              
+              setCounterSelectionData(null);
           }
       };
       window.addEventListener('keydown', handleKeyDown);
@@ -620,17 +705,13 @@ export default function App() {
           };
       }
       
-      // Determine the ACTOR for targeting validation.
-      // 1. Source Card Owner (Best)
-      // 2. Fallback to deriving from source coordinates (for Stacks)
-      // 3. Local Player (Fallback)
-      // 4. Active Turn Player (Fallback)
       const actorId = effectiveAction?.sourceCard?.ownerId 
           ?? (effectiveAction?.sourceCoords ? gameState.board[effectiveAction.sourceCoords.row][effectiveAction.sourceCoords.col].card?.ownerId : null)
           ?? (localPlayerId || gameState.activeTurnPlayerId);
 
       const boardTargets = calculateValidTargets(effectiveAction, gameState, actorId, commandContext);
       const handTargets: {playerId: number, cardIndex: number}[] = [];
+      
       if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_TARGET') {
           if (abilityMode.payload.filter) {
               gameState.players.forEach(p => {
@@ -643,13 +724,25 @@ export default function App() {
           }
       } 
       else if (cursorStack) {
+          // Check for hand targets if cursor is active and token type allows hand targeting (e.g. Revealed, Power)
           const counterDef = countersDatabase[cursorStack.type];
-          if (counterDef && counterDef.allowedTargets && counterDef.allowedTargets.includes('hand')) {
+          // Default to allowing hand target check for 'Revealed' specifically if no def exists, or if def allows
+          const allowsHand = cursorStack.type === 'Revealed' || (counterDef && counterDef.allowedTargets && counterDef.allowedTargets.includes('hand'));
+          
+          if (allowsHand) {
                gameState.players.forEach(p => {
                    p.hand.forEach((card, index) => {
+                       const constraints = {
+                          targetOwnerId: cursorStack.targetOwnerId,
+                          excludeOwnerId: cursorStack.excludeOwnerId,
+                          onlyOpponents: cursorStack.onlyOpponents || (cursorStack.targetOwnerId === -1),
+                          onlyFaceDown: cursorStack.onlyFaceDown,
+                          requiredTargetStatus: cursorStack.requiredTargetStatus,
+                          tokenType: cursorStack.type
+                       };
                        const isValid = validateTarget(
                            { card, ownerId: p.id, location: 'hand' },
-                           cursorStack,
+                           constraints,
                            localPlayerId,
                            gameState.players
                        );
@@ -660,16 +753,12 @@ export default function App() {
                });
           }
       }
-      // Add SCORING Mode valid targets
       if (abilityMode && (abilityMode.mode === 'SCORE_LAST_PLAYED_LINE' || abilityMode.mode === 'SELECT_LINE_END')) {
-          // Calculate valid cells (Row/Col)
           const gridSize = gameState.board.length;
-          // If sourceCoords exist (Last Played), only that row/col
           if (abilityMode.sourceCoords) {
               for(let r=0; r<gridSize; r++) boardTargets.push({row: r, col: abilityMode.sourceCoords.col});
               for(let c=0; c<gridSize; c++) boardTargets.push({row: abilityMode.sourceCoords.row, col: c});
           } else {
-              // Else ALL cells are valid line selectors
               for(let r=0; r<gridSize; r++) {
                   for(let c=0; c<gridSize; c++) boardTargets.push({row: r, col: c});
               }
@@ -680,7 +769,6 @@ export default function App() {
       setValidHandTargets(handTargets);
   }, [abilityMode, cursorStack, gameState.board, gameState.players, localPlayerId, commandContext]);
 
-  // ... (Highlights and modal closing omitted) ...
   useEffect(() => {
       if (latestHighlight) {
           setHighlight(latestHighlight);
@@ -689,13 +777,11 @@ export default function App() {
       }
   }, [latestHighlight]);
 
-  // Handle Incoming Floating Text Events
   useEffect(() => {
       if (latestFloatingTexts && latestFloatingTexts.length > 0) {
           const newTexts = latestFloatingTexts.map(ft => ({ ...ft, id: `float_${Date.now()}_${Math.random()}` }));
           setActiveFloatingTexts(prev => [...prev, ...newTexts]);
           
-          // Auto-remove after animation duration (1.5s)
           const timer = setTimeout(() => {
               setActiveFloatingTexts(prev => prev.filter(item => !newTexts.find(nt => nt.id === item.id)));
           }, 1500);
@@ -704,6 +790,7 @@ export default function App() {
       }
   }, [latestFloatingTexts]);
 
+  // ... (Rest of component remains unchanged)
   const closeAllModals = () => {
       setTokensModalOpen(false);
       setCountersModalOpen(false);
@@ -712,6 +799,7 @@ export default function App() {
       setViewingCard(null);
       setRulesModalOpen(false);
       setCommandModalCard(null);
+      setCounterSelectionData(null);
   };
   
   const handleStartGameSequence = () => {
@@ -767,7 +855,6 @@ export default function App() {
       });
   };
 
-  // ... (Rest of Context Menu and standard render logic unchanged) ...
   const closeContextMenu = () => setContextMenuProps(null);
   
   const openContextMenu = (e: React.MouseEvent, type: ContextMenuParams['type'], data: any) => {
@@ -799,8 +886,8 @@ export default function App() {
         if (abilityMode || cursorStack) return;
         if (interactionLock.current) return;
         
-        // Update: Allow Dummies
         if (player.id === localPlayerId || player.isDummy) {
+            // Updated: Use playCommandCard from useAppCommand
             if (card.deck === DeckType.Command) {
                 closeAllModals();
                 playCommandCard(card, { card, source: 'hand', playerId: player.id, cardIndex });
@@ -819,7 +906,6 @@ export default function App() {
         }
     };
 
-    // ... (handleDoubleClickPileCard, handleViewDeck, handleViewDiscard) ...
     const handleDoubleClickPileCard = (player: Player, card: Card, cardIndex: number, source: 'deck' | 'discard') => {
         if (abilityMode || cursorStack) return;
         if (interactionLock.current) return;
@@ -830,7 +916,6 @@ export default function App() {
   const handleViewDeck = (player: Player) => { setViewingDiscard(null); setViewingDeck(player); };
   const handleViewDiscard = (player: Player) => { setViewingDeck(null); setViewingDiscard({ player }); };
   
-  // Derived state for modals to ensure synchronization with game state updates
   const viewingDiscardPlayer = useMemo(() => {
       if (!viewingDiscard) return null;
       return gameState.players.find(p => p.id === viewingDiscard.player.id) || viewingDiscard.player;
@@ -868,7 +953,6 @@ export default function App() {
         if (!isBoardItem && canControl && card.deck === DeckType.Command) {
              items.push({ label: t('play'), isBold: true, onClick: () => { playCommandCard(card, { card, source: 'announced', playerId: player!.id }); } });
         }
-        // ... (Standard menu items logic remains the same, `canControl` now includes Dummies) ...
         if (isBoardItem && canControl) {
              if (card.isFaceDown) { items.push({ label: t('flipUp'), isBold: true, onClick: () => flipBoardCard(data.boardCoords) }); } 
              else { items.push({ label: t('flipDown'), onClick: () => flipBoardCardFaceDown(data.boardCoords) }); }
@@ -997,7 +1081,6 @@ export default function App() {
         const canControl = player.id === localPlayerId || !!player.isDummy;
         if (canControl) {
             items.push({ label: 'Draw Card', onClick: () => drawCard(player.id) });
-            // Add option to draw starting hand (6 cards)
             items.push({ label: 'Draw Starting Hand (6)', onClick: () => { for(let i=0; i<6; i++) drawCard(player.id); } });
             items.push({ label: 'Shuffle', onClick: () => shufflePlayerDeck(player.id) });
         }
@@ -1013,9 +1096,8 @@ export default function App() {
         return true;
     });
     return <ContextMenu x={x} y={y} items={items} onClose={closeContextMenu} />;
-  }, [gameState, localPlayerId, moveItem, handleTriggerHighlight, addBoardCardStatus, removeBoardCardStatus, modifyBoardCardPower, addAnnouncedCardStatus, removeAnnouncedCardStatus, modifyAnnouncedCardPower, addHandCardStatus, removeHandCardStatus, drawCard, shufflePlayerDeck, flipBoardCard, flipBoardCardFaceDown, revealHandCard, revealBoardCard, requestCardReveal, removeRevealedStatus, activateAbility, t, viewingDiscardPlayer, viewingDeckPlayer, playCommandCard]);
+  }, [gameState, localPlayerId, moveItem, handleTriggerHighlight, addBoardCardStatus, removeBoardCardStatus, modifyBoardCardPower, addAnnouncedCardStatus, removeAnnouncedCardStatus, modifyAnnouncedCardPower, addHandCardStatus, removeHandCardStatus, drawCard, shufflePlayerDeck, flipBoardCard, flipBoardCardFaceDown, revealHandCard, revealBoardCard, requestCardReveal, removeRevealedStatus, activateAbility, t, viewingDiscardPlayer, viewingDeckPlayer, playCommandCard, contextMenuProps]);
 
-  // ... (Effects and Modal Handlers - Unchanged) ...
   useEffect(() => {
     window.addEventListener('click', closeContextMenu);
     const handleContextMenu = (e: MouseEvent) => {
@@ -1048,7 +1130,6 @@ export default function App() {
       });
   };
 
-  // ... (Render Main Menu - Unchanged) ...
   if (!isGameActive) {
     return (
       <MainMenu 
@@ -1102,12 +1183,11 @@ export default function App() {
         onSetPhase={setPhase}
         isAutoAbilitiesEnabled={isAutoAbilitiesEnabled}
         onToggleAutoAbilities={setIsAutoAbilitiesEnabled}
-        isScoringStep={gameState.isScoringStep} // Pass status
+        isScoringStep={gameState.isScoringStep} 
         currentRound={gameState.currentRound}
         turnNumber={gameState.turnNumber}
       />
       
-      {/* Round End Modal */}
       {gameState.isRoundEndModalOpen && (
           <RoundEndModal
               gameState={gameState}
@@ -1117,21 +1197,27 @@ export default function App() {
           />
       )}
       
-      {/* Command Modal */}
       {commandModalCard && (
           <CommandModal
               isOpen={!!commandModalCard}
               card={commandModalCard}
               playerColorMap={new Map(gameState.players.map(p => [p.id, p.color])) as any}
-              onConfirm={(indices) => handleCommandConfirm(indices, commandModalCard)}
+              onConfirm={(index) => handleCommandConfirm(index, commandModalCard)}
               onCancel={() => { setCommandModalCard(null); setActionQueue([]); setCommandContext({}); }}
           />
       )}
 
-      {/* Render the Context Menu */}
+      {counterSelectionData && (
+          <CounterSelectionModal
+              isOpen={!!counterSelectionData}
+              data={counterSelectionData}
+              onConfirm={(count) => handleCounterSelectionConfirm(count, counterSelectionData)}
+              onCancel={() => { setCounterSelectionData(null); setAbilityMode(null); }}
+          />
+      )}
+
       {renderedContextMenu}
 
-      {/* ... (Panel Rendering - Pass down permissions properly) ... */}
       {isListMode ? (
         <div className="relative h-full w-full pt-14 overflow-hidden bg-gray-900">
             {localPlayer && (
@@ -1209,7 +1295,7 @@ export default function App() {
                         validTargets={validTargets}
                         noTargetOverlay={noTargetOverlay}
                         disableActiveHighlights={isTargetingMode}
-                        activeFloatingTexts={activeFloatingTexts} // Pass floating texts
+                        activeFloatingTexts={activeFloatingTexts} 
                      />
                  </div>
             </div>
@@ -1257,7 +1343,6 @@ export default function App() {
             </div>
         </div>
       ) : (
-        // Standard Mode (Absolute Positioning)
         <>
             {gameState.players.map(player => (
                 <PlayerPanel
@@ -1358,17 +1443,14 @@ export default function App() {
                 const config = viewingDiscard.pickConfig;
                 const card = viewingDiscardPlayer.discard[index];
                 
-                // Filter check
                 let isValid = false;
                 if (config.filterType === 'Device') isValid = card.types?.includes('Device') || false;
                 if (config.filterType === 'Optimates') isValid = (card.types?.includes('Optimates') || card.faction === 'Optimates') && card.types?.includes('Unit') || false;
 
                 if (isValid) {
-                    // Execute action
                     if (config.action === 'recover') {
                         recoverDiscardedCard(viewingDiscardPlayer.id, index);
                     } else if (config.action === 'resurrect' && abilityMode && abilityMode.sourceCoords) {
-                        // Store selection in payload for second step (selecting board target)
                         setAbilityMode(prev => prev ? ({
                             ...prev,
                             payload: { ...prev.payload, selectedCardIndex: index }
@@ -1483,7 +1565,7 @@ export default function App() {
       <div 
         ref={cursorFollowerRef}
         className={`fixed pointer-events-none z-[9999] flex items-center justify-center transition-transform duration-75 ${cursorStack || abilityMode ? 'block' : 'hidden'}`}
-        style={{ transform: 'translate(5px, 5px)' }} // Offset slightly so cursor isn't blocked
+        style={{ transform: 'translate(5px, 5px)' }} 
       >
           {cursorStack && (
               <div 

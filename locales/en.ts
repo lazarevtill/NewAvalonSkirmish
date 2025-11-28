@@ -1,4 +1,3 @@
-
 import { TranslationResource } from './types';
 
 export const en: TranslationResource = {
@@ -192,23 +191,23 @@ export const en: TranslationResource = {
     },
     overwatch: {
       name: "Overwatch",
-      ability: "Aim any card. Choose 2 of 3:\n‣ Move units with your aim 1 or 2 cells.\n‣ Reveal 1 card for each of your aim.\n‣ Draw 1 card for each of your aim."
+      ability: "Aim any card. Choose: \n‣ Reveal opponent cards equal to total Aim. \n‣ Draw cards equal to total Aim."
     },
     tacticalManeuver: {
       name: "Tactical Maneuver",
-      ability: "Move your unit to any cell in a line. Choose 2 of 3: \n‣ Draw cards equal to the power of an adjacent allied unit. \n‣ Move your unit 1 or 2 cells. \n‣ Gain points equal to the power of one of the moved units."
+      ability: "Move your unit to any cell in a line. Choose: \n‣ Draw cards equal to unit's power. \n‣ Gain points equal to unit's power."
     },
     inspiration: {
       name: "Inspiration",
-      ability: "Remove any number of counters from your unit. Choose 2 of 3: \n‣ Move this unit 1 or 2 cells. \n‣ Draw 1 card for each counter removed. \n‣ Gain 1 point for each counter removed."
+      ability: "Remove counters from your unit. Choose: \n‣ Draw 1 card for each counter removed. \n‣ Gain 1 point for each counter removed."
     },
     dataInterception: {
       name: "Data Interception",
-      ability: "Exploit any card. Choose 2 of 3: \n‣ Move a unit with your exploit to any cell in a line. \n‣ Reveal 1 card for each of your exploits. \n‣ Draw cards equal to the power of the highest power revealed unit."
+      ability: "Exploit any card. Choose: \n‣ Reveal opponent cards equal to total Exploit. \n‣ Move a unit with your Exploit to any cell in a line."
     },
     falseOrders: {
       name: "False Orders",
-      ability: "Move an opponent unit 1 or 2 cells. Choose 2 of 3: \n‣ Move an opponent unit 1 or 2 cells. \n‣ Stun the moved opponent unit. \n‣ Draw cards equal to the power of one of the moved opponent units."
+      ability: "Exploit an opponent unit. Choose: \n‣ Move Opponent (Range 2) then Reveal 2 cards. \n‣ Move Opponent (Range 2) then Stun unit."
     },
     mobilization1: {
       name: "Line Breach",

@@ -68,9 +68,11 @@ const shuffleDeck = (deck) => {
 const commandCardIds = new Set([
     'overwatch',
     'repositioning',
+    'tacticalManeuver',
     'mobilization',
     'inspiration',
     'dataInterception',
+    'falseOrders'
 ]);
 
 /**

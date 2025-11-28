@@ -1,145 +1,87 @@
-import React, { useState, useMemo } from 'react';
+import React from 'react';
 import { Card } from '../types';
 import { Card as CardComponent } from './Card';
-import { formatAbilityText } from '../utils/textFormatters';
 import { useLanguage } from '../contexts/LanguageContext';
 
 interface CommandModalProps {
     isOpen: boolean;
     card: Card;
     playerColorMap: Map<number, string>;
-    onConfirm: (selectedIndices: number[]) => void;
+    onConfirm: (optionIndex: number) => void;
     onCancel: () => void;
 }
 
 export const CommandModal: React.FC<CommandModalProps> = ({ isOpen, card, playerColorMap, onConfirm, onCancel }) => {
-    const { getCardTranslation } = useLanguage();
-    const [selectedIndices, setSelectedIndices] = useState<number[]>([]);
+    const { getCardTranslation, t } = useLanguage();
 
-    // Use localized text if available
     const localized = card.baseId ? getCardTranslation(card.baseId) : undefined;
     const displayCard = localized ? { ...card, ...localized } : card;
     const abilityText = displayCard.ability || "";
 
-    // Parse Ability Text to extract Main Effect and Options
-    const parsedAbility = useMemo(() => {
-        // Regex to find "Choose X of Y:"
-        // Matches text before the choice as "main", and text after as "optionsBlock"
-        const match = abilityText.match(/(.*?)Choose (\d+) of \d+:(.*)/s);
+    // Parse Ability Text for 2 Options
+    // Expected format: "Main description.\n‣ Option 1\n‣ Option 2"
+    // Supports both '‣' and '■' as delimiters.
+    const parsedOptions = React.useMemo(() => {
+        // Normalize delimiters to '‣' for splitting
+        const normalizedText = abilityText.replace(/■/g, '‣');
+        const parts = normalizedText.split('‣');
         
-        if (match) {
-            const mainText = match[1].trim();
-            const requiredCount = parseInt(match[2], 10);
-            const optionsBlock = match[3];
-            
-            // Split options by bullet point '‣' or newlines if formatted that way
-            const rawOptions = optionsBlock.split(/‣/).map(s => s.trim()).filter(s => s.length > 0);
-            
+        if (parts.length >= 3) {
             return {
-                mainText,
-                requiredCount,
-                options: rawOptions
+                main: parts[0].trim(),
+                opt1: parts[1].trim(),
+                opt2: parts[2].trim()
             };
         }
-        
-        // Fallback for non-standard formats
         return {
-            mainText: abilityText,
-            requiredCount: 0,
-            options: []
+            main: abilityText,
+            opt1: "Option 1",
+            opt2: "Option 2"
         };
     }, [abilityText]);
 
     if (!isOpen) return null;
 
-    const handleOptionClick = (index: number) => {
-        if (selectedIndices.includes(index)) {
-            // Deselect
-            setSelectedIndices(prev => prev.filter(i => i !== index));
-        } else {
-            // Select (if limit not reached)
-            if (selectedIndices.length < parsedAbility.requiredCount) {
-                setSelectedIndices(prev => [...prev, index]);
-            }
-        }
-    };
-
-    const isReady = selectedIndices.length === parsedAbility.requiredCount;
-
     return (
-        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-[200]">
-            <div className="bg-gray-900 rounded-xl border-2 border-yellow-500 shadow-2xl p-6 w-full max-w-4xl flex gap-8">
+        <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-[200] backdrop-blur-sm">
+            <div className="bg-gray-900 rounded-xl border-2 border-yellow-500 shadow-2xl p-6 w-full max-w-4xl flex gap-6">
                 
                 {/* Left: Card View */}
-                <div className="w-1/3 flex flex-col items-center justify-center">
-                    <div className="w-64 h-64 relative">
+                <div className="w-1/3 flex flex-col items-center justify-center border-r border-gray-700 pr-6">
+                    <div className="w-72 h-72 relative transform hover:scale-105 transition-transform duration-300">
                          <CardComponent card={displayCard} isFaceUp={true} playerColorMap={playerColorMap as any} disableTooltip={true} />
                     </div>
-                    <h2 className="text-2xl font-bold text-yellow-500 mt-4 text-center">{displayCard.name}</h2>
+                    <h2 className="text-2xl font-bold text-yellow-500 mt-6 text-center leading-tight">{displayCard.name}</h2>
                 </div>
 
                 {/* Right: Selection Interface */}
                 <div className="w-2/3 flex flex-col">
-                    <h3 className="text-xl font-bold text-white mb-4 border-b border-gray-700 pb-2">Execute Command</h3>
+                    <h3 className="text-xl font-bold text-white mb-4 border-b border-gray-700 pb-2">Select an Option</h3>
                     
-                    {/* Main Ability */}
-                    <div className="bg-gray-800 p-4 rounded-lg mb-6 border-l-4 border-indigo-500">
-                        <h4 className="text-indigo-400 font-bold text-sm uppercase mb-1">Main Effect</h4>
-                        <p className="text-lg text-white">{parsedAbility.mainText}</p>
+                    <div className="flex flex-col gap-3 flex-grow justify-center">
+                        <button 
+                            onClick={() => onConfirm(0)}
+                            className="group relative bg-gray-800 hover:bg-indigo-900 border-2 border-gray-600 hover:border-indigo-400 rounded-lg p-4 transition-all duration-200 text-left shadow-lg hover:shadow-indigo-500/20 flex items-start gap-4"
+                        >
+                            <div className="bg-gray-700 text-gray-400 w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-xs group-hover:bg-indigo-500 group-hover:text-white transition-colors mt-1">1</div>
+                            <p className="text-gray-200 group-hover:text-white text-base font-medium leading-snug">{parsedOptions.opt1}</p>
+                        </button>
+
+                        <button 
+                            onClick={() => onConfirm(1)}
+                            className="group relative bg-gray-800 hover:bg-indigo-900 border-2 border-gray-600 hover:border-indigo-400 rounded-lg p-4 transition-all duration-200 text-left shadow-lg hover:shadow-indigo-500/20 flex items-start gap-4"
+                        >
+                            <div className="bg-gray-700 text-gray-400 w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-xs group-hover:bg-indigo-500 group-hover:text-white transition-colors mt-1">2</div>
+                            <p className="text-gray-200 group-hover:text-white text-base font-medium leading-snug">{parsedOptions.opt2}</p>
+                        </button>
                     </div>
 
-                    {/* Options Selection */}
-                    {parsedAbility.options.length > 0 && (
-                        <div className="flex-grow">
-                            <h4 className="text-yellow-500 font-bold text-sm uppercase mb-2">
-                                Select {parsedAbility.requiredCount} options (in order):
-                            </h4>
-                            <div className="space-y-2">
-                                {parsedAbility.options.map((optionText, index) => {
-                                    const isSelected = selectedIndices.includes(index);
-                                    const order = selectedIndices.indexOf(index) + 1;
-
-                                    return (
-                                        <button
-                                            key={index}
-                                            onClick={() => handleOptionClick(index)}
-                                            className={`w-full text-left p-3 rounded-lg border transition-all flex items-center gap-3 ${
-                                                isSelected 
-                                                    ? 'bg-yellow-900/30 border-yellow-500 text-white' 
-                                                    : 'bg-gray-800 border-gray-700 text-gray-400 hover:bg-gray-750 hover:border-gray-600'
-                                            }`}
-                                        >
-                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold border ${
-                                                isSelected ? 'bg-yellow-500 text-black border-yellow-500' : 'bg-gray-700 text-gray-500 border-gray-600'
-                                            }`}>
-                                                {isSelected ? order : ''}
-                                            </div>
-                                            <span className="text-base">{optionText}</span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Actions */}
-                    <div className="mt-8 flex justify-end gap-4">
+                    <div className="mt-6 flex justify-end">
                         <button 
                             onClick={onCancel}
-                            className="px-6 py-2 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold transition-colors"
+                            className="px-6 py-2 rounded bg-gray-700 hover:bg-gray-600 text-white font-bold transition-colors text-sm"
                         >
-                            Cancel
-                        </button>
-                        <button
-                            onClick={() => onConfirm(selectedIndices)}
-                            disabled={!isReady}
-                            className={`px-6 py-2 rounded font-bold transition-colors ${
-                                isReady 
-                                    ? 'bg-yellow-500 hover:bg-yellow-400 text-black shadow-[0_0_10px_#eab308]' 
-                                    : 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                            }`}
-                        >
-                            Execute Sequence
+                            {t('cancel')}
                         </button>
                     </div>
                 </div>

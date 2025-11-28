@@ -1,8 +1,7 @@
 import { useState, useCallback } from 'react';
-import { Card, GameState, AbilityAction, CommandContext, DragItem, Player } from '../types';
+import { Card, GameState, AbilityAction, CommandContext, DragItem, Player, CounterSelectionData } from '../types';
 import { DeckType } from '../types';
 import { getCardAbilityAction, canActivateAbility, isLine, isAdjacent } from '../utils/autoAbilities';
-import { getCommandAction } from '../utils/commandLogic';
 import { checkActionHasTargets } from '../utils/targeting';
 
 interface UseAppAbilitiesProps {
@@ -12,13 +11,12 @@ interface UseAppAbilitiesProps {
     setAbilityMode: React.Dispatch<React.SetStateAction<AbilityAction | null>>;
     cursorStack: any;
     setCursorStack: React.Dispatch<React.SetStateAction<any>>;
-    setActionQueue: React.Dispatch<React.SetStateAction<AbilityAction[]>>;
     commandContext: CommandContext;
     setCommandContext: React.Dispatch<React.SetStateAction<CommandContext>>;
-    setCommandModalCard: React.Dispatch<React.SetStateAction<Card | null>>;
     setViewingDiscard: React.Dispatch<React.SetStateAction<any>>;
     setNoTargetOverlay: React.Dispatch<React.SetStateAction<{ row: number, col: number } | null>>;
     setPlayMode: React.Dispatch<React.SetStateAction<any>>;
+    setCounterSelectionData: React.Dispatch<React.SetStateAction<CounterSelectionData | null>>;
     interactionLock: React.MutableRefObject<boolean>;
     
     // Actions from useGameState
@@ -38,7 +36,6 @@ interface UseAppAbilitiesProps {
     addBoardCardStatus: (coords: any, status: string, pid: number) => void;
     removeBoardCardStatus: (coords: any, status: string) => void;
     removeBoardCardStatusByOwner: (coords: any, status: string, pid: number) => void;
-    requestCardReveal: (target: any, pid: number) => void;
 }
 
 export const useAppAbilities = ({
@@ -48,13 +45,12 @@ export const useAppAbilities = ({
     setAbilityMode,
     cursorStack,
     setCursorStack,
-    setActionQueue,
     commandContext,
     setCommandContext,
-    setCommandModalCard,
     setViewingDiscard,
     setNoTargetOverlay,
     setPlayMode,
+    setCounterSelectionData,
     interactionLock,
     moveItem,
     drawCard,
@@ -73,63 +69,6 @@ export const useAppAbilities = ({
     removeBoardCardStatus,
     removeBoardCardStatusByOwner,
 }: UseAppAbilitiesProps) => {
-
-    const playCommandCard = useCallback((card: Card, source: DragItem) => {
-        if (localPlayerId === null) return;
-        const owner = gameState.players.find(p => p.id === source.playerId);
-        const canControl = source.playerId === localPlayerId || (owner?.isDummy);
-
-        if (!canControl) return;
-
-        // 1. Move to Showcase (Announced)
-        moveItem(source, { target: 'announced', playerId: source.playerId! });
-
-        // Reset context when playing a new command
-        setCommandContext({});
-
-        // 2. Check if simple (no sub-options) or complex
-        if (card.ability.includes('Choose')) {
-            // Complex: Open Modal
-            setCommandModalCard(card);
-        } else {
-            // Simple: Execute main logic immediately
-            const mainAction = getCommandAction(card.id, -1, card, gameState, source.playerId!);
-            if (mainAction) {
-                setActionQueue([
-                    mainAction,
-                    { type: 'GLOBAL_AUTO_APPLY', payload: { cleanupCommand: true, card: card }, sourceCard: card }
-                ]);
-            }
-        }
-    }, [gameState, localPlayerId, moveItem, setActionQueue, setCommandContext, setCommandModalCard]);
-
-    const handleCommandConfirm = useCallback((selectedIndices: number[], commandModalCard: Card) => {
-        if (!commandModalCard || localPlayerId === null) return;
-
-        const ownerId = commandModalCard.ownerId || localPlayerId;
-
-        const queue: AbilityAction[] = [];
-
-        // Main Ability
-        const mainAction = getCommandAction(commandModalCard.id, -1, commandModalCard, gameState, ownerId);
-        if (mainAction) queue.push(mainAction);
-
-        // Sub Options
-        selectedIndices.forEach(idx => {
-            const subAction = getCommandAction(commandModalCard.id, idx, commandModalCard, gameState, ownerId);
-            if (subAction) queue.push(subAction);
-        });
-
-        // Cleanup
-        queue.push({
-            type: 'GLOBAL_AUTO_APPLY',
-            payload: { cleanupCommand: true, card: commandModalCard },
-            sourceCard: commandModalCard
-        });
-
-        setActionQueue(queue);
-        setCommandModalCard(null);
-    }, [gameState, localPlayerId, setActionQueue, setCommandModalCard]);
 
     const activateAbility = useCallback((card: Card, boardCoords: { row: number, col: number }) => {
         if (abilityMode || cursorStack) return;
@@ -169,64 +108,7 @@ export const useAppAbilities = ({
                 return;
             }
 
-            if (action.mode === 'PRINCEPS_SHIELD_THEN_AIM') {
-                addBoardCardStatus(boardCoords, 'Shield', card.ownerId!);
-                
-                // NEW: Use CREATE_STACK for the Aim portion instead of SELECT_TARGET
-                const aimAction: AbilityAction = {
-                    type: 'CREATE_STACK',
-                    tokenType: 'Aim',
-                    count: 1,
-                    sourceCoords: boardCoords,
-                    isDeployAbility: true,
-                    requiredTargetStatus: 'Threat'
-                };
-                
-                // Check if Aim portion is valid
-                const hasTargets = checkActionHasTargets(aimAction, gameState, card.ownerId!, commandContext);
-                
-                if (hasTargets) {
-                    setCursorStack({
-                        type: 'Aim',
-                        count: 1,
-                        isDragging: false,
-                        sourceCoords: boardCoords,
-                        isDeployAbility: true,
-                        requiredTargetStatus: 'Threat'
-                    });
-                } else {
-                    // Shield applied, but no target for Aim. Mark used.
-                    markAbilityUsed(boardCoords, true);
-                    setNoTargetOverlay(boardCoords);
-                    setTimeout(() => setNoTargetOverlay(null), 750);
-                }
-                return;
-            }
-            if (action.mode === 'WALKING_TURRET_SHIELD') {
-                addBoardCardStatus(boardCoords, 'Shield', card.ownerId!);
-                markAbilityUsed(boardCoords, action.isDeployAbility);
-                return;
-            }
-            if (action.mode === 'INTEGRATOR_SCORE') {
-                const gridSize = gameState.board.length;
-                const { row, col } = boardCoords;
-                let exploits = 0;
-                for (let r = 0; r < gridSize; r++) {
-                    for (let c = 0; c < gridSize; c++) {
-                        const cell = gameState.board[r][c];
-                        if ((r === row || c === col) && cell.card) {
-                            exploits += cell.card.statuses?.filter(s => s.type === 'Exploit' && s.addedByPlayerId === card.ownerId).length || 0;
-                        }
-                    }
-                }
-                if (exploits > 0) updatePlayerScore(card.ownerId!, exploits);
-                markAbilityUsed(boardCoords, action.isDeployAbility);
-                setNoTargetOverlay(boardCoords);
-                setTimeout(() => setNoTargetOverlay(null), 500);
-                return;
-            }
             if (action.type === 'CREATE_STACK' && action.tokenType && action.count) {
-                // NEW: Check for valid targets before creating stack
                 const hasTargets = checkActionHasTargets(action, gameState, card.ownerId!, commandContext);
                 
                 if (!hasTargets) {
@@ -285,7 +167,7 @@ export const useAppAbilities = ({
                     const player = gameState.players.find(p => p.id === card.ownerId);
                     if (player) {
                         const hasOptimates = player.discard.some(c =>
-                            (c.types?.includes('Optimates') || c.faction === 'Optimates' || c.deck === 'Optimates') &&
+                            (c.types?.includes('Optimates') || c.faction === 'Optimates') &&
                             c.types?.includes('Unit')
                         );
                         if (hasOptimates) {
@@ -312,7 +194,7 @@ export const useAppAbilities = ({
                 }
             }
         }
-    }, [abilityMode, cursorStack, gameState, localPlayerId, commandContext, addBoardCardStatus, markAbilityUsed, setAbilityMode, setCursorStack, setNoTargetOverlay, updatePlayerScore, applyGlobalEffect, setViewingDiscard]);
+    }, [abilityMode, cursorStack, gameState, localPlayerId, commandContext, markAbilityUsed, setAbilityMode, setCursorStack, setNoTargetOverlay, applyGlobalEffect, setViewingDiscard]);
 
     const handleLineSelection = useCallback((coords: { row: number, col: number }) => {
         if (!abilityMode) return;
@@ -392,11 +274,24 @@ export const useAppAbilities = ({
         }
 
         if (abilityMode && abilityMode.type === 'ENTER_MODE') {
-            if (abilityMode.sourceCard && abilityMode.sourceCard.id === card.id && abilityMode.mode !== 'SELECT_LINE_START' && abilityMode.mode !== 'INTEGRATOR_LINE_SELECT' && abilityMode.mode !== 'SELECT_UNIT_FOR_MOVE') return;
+            if (abilityMode.sourceCard && abilityMode.sourceCard.id === card.id && abilityMode.mode !== 'SELECT_LINE_START' && abilityMode.mode !== 'INTEGRATOR_LINE_SELECT' && abilityMode.mode !== 'SELECT_UNIT_FOR_MOVE' && abilityMode.mode !== 'SELECT_TARGET') return;
             const { mode, payload, sourceCard, sourceCoords, isDeployAbility } = abilityMode;
             if (mode === 'SELECT_LINE_START' || mode === 'SELECT_LINE_END') { handleLineSelection(boardCoords); return; }
 
             const actorId = sourceCard ? sourceCard.ownerId : (localPlayerId || gameState.activeTurnPlayerId);
+
+            if (mode === 'SELECT_TARGET' && payload.actionType === 'OPEN_COUNTER_MODAL') {
+                if (payload.filter && !payload.filter(card)) return;
+                
+                // Inspiration Logic: Open Modal
+                setCounterSelectionData({
+                    card: card,
+                    callbackAction: payload.rewardType // 'DRAW_REMOVED' or 'SCORE_REMOVED'
+                });
+                
+                setAbilityMode(null); // Exit target mode
+                return;
+            }
 
             if (mode === 'SELECT_TARGET' && payload.actionType === 'DESTROY') {
                 if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
@@ -407,26 +302,7 @@ export const useAppAbilities = ({
                 setTimeout(() => setAbilityMode(null), 100);
                 return;
             }
-            if (mode === 'SELECT_TARGET' && payload.tokenType) {
-                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
-                // This logic normally handled by CREATE_STACK but some legacy modes use SELECT_TARGET with tokenType
-                // We'll manually trigger a "drop" via moveItem/handleDrop logic? No, handleDrop is for items. 
-                // We need to spawn a token or add status. 
-                // Actually, existing code used handleDrop with 'counter_panel' source.
-                // Since we don't have handleDrop here directly for *counters*, we rely on what App.tsx passed.
-                // But wait, moveItem logic handles counter application? Yes, if source is counter_panel.
-                // We'll construct a synthetic item.
-                moveItem({
-                    card: { id: 'dummy', deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
-                    source: 'counter_panel',
-                    statusType: payload.tokenType,
-                    count: payload.count || 1
-                }, { target: 'board', boardCoords });
-                
-                if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
-                setTimeout(() => setAbilityMode(null), 100);
-                return;
-            }
+            
             if (mode === 'SELECT_TARGET' && payload.actionType === 'DRAW_EQUAL_POWER') {
                 if (payload.filter && !payload.filter(card)) return;
                 const count = Math.max(0, card.power + (card.powerModifier || 0));
@@ -441,11 +317,18 @@ export const useAppAbilities = ({
                 setTimeout(() => setAbilityMode(null), 100);
                 return;
             }
-            if (mode === 'SELECT_TARGET' && payload.actionType === 'REMOVE_ALL_COUNTERS_SELF') {
-                if (payload.filter && !payload.filter(card)) return;
-                if (card.statuses && card.statuses.length > 0) {
-                    setAbilityMode(null);
-                }
+            
+            if (mode === 'SELECT_TARGET' && payload.tokenType) {
+                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
+                moveItem({
+                    card: { id: 'dummy', deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                    source: 'counter_panel',
+                    statusType: payload.tokenType,
+                    count: payload.count || 1
+                }, { target: 'board', boardCoords });
+                
+                if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
+                setTimeout(() => setAbilityMode(null), 100);
                 return;
             }
 
@@ -537,7 +420,7 @@ export const useAppAbilities = ({
                     sourceCoords: boardCoords,
                     isDeployAbility: isDeployAbility,
                     recordContext: abilityMode.recordContext,
-                    payload: { allowSelf: false, abilitySourceCoords: sourceCoords, range: payload.range }
+                    payload: { allowSelf: false, abilitySourceCoords: sourceCoords, range: payload.range, chainedAction: payload.chainedAction }
                 });
                 return;
             }
@@ -549,7 +432,7 @@ export const useAppAbilities = ({
                     sourceCard: card,
                     sourceCoords: boardCoords,
                     recordContext: abilityMode.recordContext,
-                    payload: { allowSelf: false, range: payload.range }
+                    payload: { allowSelf: false, range: payload.range, chainedAction: payload.chainedAction }
                 });
                 return;
             }
@@ -584,7 +467,7 @@ export const useAppAbilities = ({
         if (!abilityMode && !cursorStack) {
             activateAbility(card, boardCoords);
         }
-    }, [abilityMode, cursorStack, gameState, localPlayerId, interactionLock, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, setCursorStack, removeBoardCardStatus, removeBoardCardStatusByOwner, addBoardCardStatus, modifyBoardCardPower, swapCards, transferStatus, transferAllCounters, updatePlayerScore, drawCard, activateAbility]);
+    }, [abilityMode, cursorStack, gameState, localPlayerId, interactionLock, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, setCursorStack, removeBoardCardStatus, removeBoardCardStatusByOwner, addBoardCardStatus, modifyBoardCardPower, swapCards, transferStatus, transferAllCounters, updatePlayerScore, drawCard, activateAbility, setCounterSelectionData]);
 
     const handleEmptyCellClick = useCallback((boardCoords: { row: number, col: number }) => {
         if (interactionLock.current) return;
@@ -667,21 +550,52 @@ export const useAppAbilities = ({
             }
 
             if (isValidMove) {
+                // Capture power BEFORE move for rewards (since moveItem updates state)
+                const cardPower = Math.max(0, sourceCard.power + (sourceCard.powerModifier || 0));
+
                 if (payload.allowSelf && currentCardCoords && boardCoords.row === currentCardCoords.row && boardCoords.col === currentCardCoords.col) { }
                 else if (currentCardCoords) {
                     moveItem({ card: sourceCard, source: 'board', boardCoords: currentCardCoords, bypassOwnershipCheck: true }, { target: 'board', boardCoords });
                 }
 
                 if (abilityMode.recordContext) {
-                    setCommandContext({ lastMovedCardCoords: boardCoords });
+                    setCommandContext({ lastMovedCardCoords: boardCoords, lastMovedCardId: sourceCard.id });
                 }
 
-                if (payload.abilitySourceCoords) {
-                    markAbilityUsed(payload.abilitySourceCoords, isDeployAbility);
-                } else if (sourceCoords && sourceCoords.row >= 0) {
-                    markAbilityUsed(boardCoords, isDeployAbility);
+                if (payload.chainedAction) {
+                    // Execute chained action (e.g. False Orders Reveal/Stun or Tactical Maneuver Reward)
+                    const nextAction = { ...payload.chainedAction };
+                    // If targetOwnerId is -2 (Target Moved Card Owner), resolve it now
+                    if (nextAction.targetOwnerId === -2) {
+                        nextAction.targetOwnerId = sourceCard.ownerId; // The moved card's owner
+                    }
+                    
+                    if (nextAction.type === 'CREATE_STACK') {
+                        setCursorStack({
+                            ...nextAction,
+                            isDragging: false,
+                            sourceCoords: boardCoords
+                        });
+                        setAbilityMode(null);
+                    } else if (nextAction.type === 'GLOBAL_AUTO_APPLY') {
+                        const reward = nextAction.payload.contextReward;
+                        if (reward === 'STUN_MOVED_UNIT') {
+                            addBoardCardStatus(boardCoords, 'Stun', actorId!);
+                        } else if (reward === 'DRAW_MOVED_POWER') {
+                            for(let i=0; i<cardPower; i++) drawCard(actorId!);
+                        } else if (reward === 'SCORE_MOVED_POWER') {
+                            updatePlayerScore(actorId!, cardPower);
+                        }
+                        setAbilityMode(null);
+                    }
+                } else {
+                    if (payload.abilitySourceCoords) {
+                        markAbilityUsed(payload.abilitySourceCoords, isDeployAbility);
+                    } else if (sourceCoords && sourceCoords.row >= 0) {
+                        markAbilityUsed(boardCoords, isDeployAbility);
+                    }
+                    setTimeout(() => setAbilityMode(null), 100);
                 }
-                setTimeout(() => setAbilityMode(null), 100);
                 return;
             }
             return;
@@ -721,7 +635,7 @@ export const useAppAbilities = ({
             setTimeout(() => setAbilityMode(null), 100);
             return;
         }
-    }, [interactionLock, abilityMode, gameState, localPlayerId, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, spawnToken, setCommandContext, resurrectDiscardedCard, updatePlayerScore]);
+    }, [interactionLock, abilityMode, gameState, localPlayerId, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, spawnToken, setCommandContext, resurrectDiscardedCard, updatePlayerScore, addBoardCardStatus, setCursorStack, drawCard]);
 
     const handleHandCardClick = useCallback((player: Player, card: Card, cardIndex: number) => {
         if (interactionLock.current) return;
@@ -737,26 +651,17 @@ export const useAppAbilities = ({
     }, [interactionLock, abilityMode, moveItem, markAbilityUsed, setAbilityMode]);
 
     const handleAnnouncedCardDoubleClick = useCallback((player: Player, card: Card) => {
+        // Double-click on announced card now handled by useAppCommand's playCommandCard logic invoked from App.tsx
         if (abilityMode || cursorStack) return;
         if (interactionLock.current) return;
-
-        const canControl = player.id === localPlayerId || !!player.isDummy;
-        if (!canControl) return;
-
-        if (card.deck === DeckType.Command) {
-            playCommandCard(card, { card, source: 'announced', playerId: player.id });
-            return;
-        }
 
         if (!gameState.isGameStarted) return;
         if (gameState.activeTurnPlayerId !== player.id) return;
         if (!canActivateAbility(card, gameState.currentPhase, gameState.activeTurnPlayerId)) return;
         activateAbility(card, { row: -1, col: -1 });
-    }, [abilityMode, cursorStack, interactionLock, localPlayerId, gameState, playCommandCard, activateAbility]);
+    }, [abilityMode, cursorStack, interactionLock, gameState, activateAbility]);
 
     return {
-        playCommandCard,
-        handleCommandConfirm,
         activateAbility,
         handleLineSelection,
         handleBoardCardClick,

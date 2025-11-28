@@ -173,7 +173,7 @@
       "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763253298/FUS_CODE_KEEPER_qotsym.png",
       "fallbackImage": "/images/cards/FUS_CODE_KEEPER.png",
       "power": 3,
-      "ability": "Deploy: Exploit all opponent cards with your threat.\nSupport ⇒ Commit: Move opponent card with exploit 1 cell.",
+      "ability": "Deploy: Exploit opponent cards with threat.\nSupport ⇒ Commit: Move opponent card with exploit 1 cell.",
       "flavorText": "The Signal is truth. All else is noise.",
       "types": ["Unit", "Fusion"],
       "faction": "Fusion",
@@ -229,7 +229,7 @@
       "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763253291/CMD_OVERWATCH_hrba9x.png",
       "fallbackImage": "/images/cards/CMD_OVERWATCH.png",
       "power": 0,
-      "ability": "Aim any card. Choose 2 of 3:\n‣ Move units with your aim 1 or 2 cells.\n‣ Reveal 1 card for each of your aim.\n‣ Draw 1 card for each of your aim.",
+      "ability": "■ Aim 1 on any card. Reveal 1 opponent hand card for each of your Aim counters on the battlefield. \n■ Aim 1 on any card. Draw 1 card for each of your Aim counters on the battlefield.",
       "types": ["Command"],
       "faction": "Command",
       "allowedPanels": ["DECK_BUILDER"]
@@ -239,7 +239,7 @@
       "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763253296/CMD_REPOSITIONING_m7k4kf.png",
       "fallbackImage": "/images/cards/CMD_REPOSITIONING.png",
       "power": 0,
-      "ability": "Move your unit to any cell in a line. Choose 2 of 3: \n‣ Draw cards equal to the power of an adjacent allied unit. \n‣ Move your unit 1 or 2 cells. \n‣ Gain points equal to the power of one of the moved units.",
+      "ability": "■ Move your unit to an open cell in its line. Draw cards equal to the Power of the moved unit. \n■ Move your unit to an open cell in its line. Gain points equal to the Power of the moved unit.",
       "types": ["Command"],
       "faction": "Command",
       "allowedPanels": ["DECK_BUILDER"]
@@ -249,7 +249,7 @@
       "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763260942/CMD_INSPIRATION_nxifhu.png",
       "fallbackImage": "/images/cards/CMD_INSPIRATION.png",
       "power": 0,
-      "ability": "Remove any number of counters from your unit. Choose 2 of 3: \n‣ Move this unit 1 or 2 cells. \n‣ Draw 1 card for each counter removed. \n‣ Gain 1 point for each counter removed.",
+      "ability": "■ Remove any number of non-Support/Threat counters from your unit. Draw 1 card for each counter removed. \n■ Remove any number of non-Support/Threat counters from your unit. Gain 1 point for each counter removed.",
       "types": ["Command"],
       "faction": "Command",
       "allowedPanels": ["DECK_BUILDER"]
@@ -259,7 +259,7 @@
       "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763253290/CMD_DATA_INTERCEPTION_ks4lcv.png",
       "fallbackImage": "/images/cards/CMD_DATA_INTERCEPTION.png",
       "power": 0,
-      "ability": "Exploit any card. Choose 2 of 3: \n‣ Move a unit with your exploit to any cell in a line. \n‣ Reveal 1 card for each of your exploits. \n‣ Draw cards equal to the power of the highest power revealed unit.",
+      "ability": "■ Exploit 1 on any card. Reveal 1 opponent hand card for each of your Exploit counters on the battlefield. \n■ Exploit 1 on any card. Move a unit with your Exploit to an open cell in its line.",
       "types": ["Command"],
       "faction": "Command",
       "allowedPanels": ["DECK_BUILDER"]
@@ -269,12 +269,12 @@
       "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763640484/CMD_FALSE_ORDERS_ghi01y.png",
       "fallbackImage": "/images/cards/CMD_DATA_INTERCEPTION.png",
       "power": 0,
-      "ability": "Move an opponent unit 1 or 2 cells. Choose 2 of 3: \n‣ Move an opponent unit 1 or 2 cells. \n‣ Stun the moved opponent unit. \n‣ Draw cards equal to the power of one of the moved opponent units.",
+      "ability": "■ Exploit 1 on an opponent card. Move a card with your Exploit up to 2 adjacent cells. Reveal up to 2 opponent hand cards. \n■ Exploit 1 on an opponent card. Move a card with your Exploit up to 2 adjacent cells. Stun the moved card 1.",
       "types": ["Command"],
       "faction": "Command",
       "allowedPanels": ["DECK_BUILDER"]
     },
-	"mobilization1": {
+	  "mobilization1": {
       "name": "Line Breach",
       "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763894862/line_ocsoyj.png",
       "fallbackImage": "/images/cards/CMD_MOBILIZATION.png",
@@ -282,27 +282,7 @@
       "ability": "Gain points in a chosen line of the battlefield.",
       "types": ["Command"],
       "faction": "Command",
-      "allowedPanels": []
-    },
-	"mobilization2": {
-      "name": "Logistics Chain",
-      "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763894861/diagonal_u96ulk.png",
-      "fallbackImage": "/images/cards/CMD_MOBILIZATION.png",
-      "power": 0,
-      "ability": "Gain points in a chosen diagonal of the battlefield.",
-      "types": ["Command"],
-      "faction": "Command",
-      "allowedPanels": []
-    },
-	"mobilization3": {
-      "name": "Sector Capture",
-      "imageUrl": "https://res.cloudinary.com/dxxh6meej/image/upload/v1763895447/support_tgjhgd.png",
-      "fallbackImage": "/images/cards/CMD_MOBILIZATION.png",
-      "power": 0,
-      "ability": "Gain points from 4 adjacent allied cards.",
-      "types": ["Command"],
-      "faction": "Command",
-      "allowedPanels": []
+      "allowedPanels": ["DECK_BUILDER"]
     }
   },
 
@@ -429,7 +409,7 @@
       { "cardId": "tacticalManeuver", "quantity": 2 },
       { "cardId": "inspiration", "quantity": 2 },
       { "cardId": "dataInterception", "quantity": 2 },
-	  { "cardId": "falseOrders", "quantity": 2 }
+      { "cardId": "falseOrders", "quantity": 2 }
       ]
     },
     {
@@ -446,7 +426,7 @@
       { "cardId": "tacticalManeuver", "quantity": 2 },
       { "cardId": "inspiration", "quantity": 2 },
       { "cardId": "dataInterception", "quantity": 2 },
-	  { "cardId": "falseOrders", "quantity": 2 }
+      { "cardId": "falseOrders", "quantity": 2 }
       ]
     },
     {
@@ -463,8 +443,7 @@
       { "cardId": "tacticalManeuver", "quantity": 2 },
       { "cardId": "inspiration", "quantity": 2 },
       { "cardId": "dataInterception", "quantity": 2 },
-	  { "cardId": "falseOrders", "quantity": 2 }
-
+      { "cardId": "falseOrders", "quantity": 2 }
       ]
     },
     {
@@ -481,7 +460,7 @@
       { "cardId": "tacticalManeuver", "quantity": 2 },
       { "cardId": "inspiration", "quantity": 2 },
       { "cardId": "dataInterception", "quantity": 2 },
-	  { "cardId": "falseOrders", "quantity": 2 }
+      { "cardId": "falseOrders", "quantity": 2 }
       ]
     }
   ]

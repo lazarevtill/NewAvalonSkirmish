@@ -1,5 +1,4 @@
-import { GameState, Card, CommandContext } from '../types';
-import { AbilityAction } from './autoAbilities';
+import { GameState, Card, CommandContext, AbilityAction } from '../types';
 
 /**
  * Validates if a specific target meets the constraints.
@@ -15,6 +14,7 @@ export const validateTarget = (
         mustBeAdjacentToSource?: boolean;
         mustBeInLineWithSource?: boolean;
         sourceCoords?: { row: number, col: number };
+        tokenType?: string; // Passed to check for uniqueness
     },
     userPlayerId: number | null,
     players: GameState['players']
@@ -22,13 +22,14 @@ export const validateTarget = (
     const { card, ownerId, location } = target;
     
     // 1. Target Owner (Inclusive)
-    if (constraints.targetOwnerId !== undefined && constraints.targetOwnerId !== ownerId) return false;
+    if (constraints.targetOwnerId !== undefined && constraints.targetOwnerId !== -1 && constraints.targetOwnerId !== -2 && constraints.targetOwnerId !== ownerId) return false;
 
     // 2. Excluded Owner (Exclusive)
     if (constraints.excludeOwnerId !== undefined && constraints.excludeOwnerId === ownerId) return false;
 
     // 3. Only Opponents
-    if (constraints.onlyOpponents) {
+    // -1 in targetOwnerId also implies Only Opponents
+    if (constraints.onlyOpponents || constraints.targetOwnerId === -1) {
         // Cannot be self
         if (ownerId === userPlayerId) return false;
         
@@ -42,12 +43,19 @@ export const validateTarget = (
 
     // 4. Only Face Down (Strict Interpretation of user rules)
     if (constraints.onlyFaceDown) {
-        // Rule 1: No 'Revealed' Token allowed (Universal)
-        if (card.statuses?.some(s => s.type === 'Revealed')) return false;
+        // Rule 1: No 'Revealed' Token allowed FROM THIS PLAYER (Universal)
+        if (card.statuses?.some(s => s.type === 'Revealed' && s.addedByPlayerId === userPlayerId)) return false;
 
-        // Rule 2: If on board, must be physically face down
+        // Rule 2: If on board, must be physically face down OR revealed only to others
         if (location === 'board') {
             if (!card.isFaceDown) return false;
+        }
+    }
+    
+    // 4.1 Unique Token Check (If adding 'Revealed', target must not already have 'Revealed' from this player)
+    if (constraints.tokenType === 'Revealed') {
+        if (card.statuses?.some(s => s.type === 'Revealed' && s.addedByPlayerId === userPlayerId)) {
+            return false;
         }
     }
 
@@ -100,7 +108,8 @@ export const calculateValidTargets = (
               requiredTargetStatus: action.requiredTargetStatus,
               mustBeAdjacentToSource: action.mustBeAdjacentToSource,
               mustBeInLineWithSource: action.mustBeInLineWithSource,
-              sourceCoords: action.sourceCoords
+              sourceCoords: action.sourceCoords,
+              tokenType: action.tokenType
          };
          
          for(let r=0; r<gridSize; r++) {
@@ -351,22 +360,31 @@ export const checkActionHasTargets = (action: AbilityAction, currentGameState: G
      // Note: CREATE_STACK is now checked via calculateValidTargets as well
      if (action.type === 'CREATE_STACK') {
          const boardTargets = calculateValidTargets(action, currentGameState, playerId, commandContext);
-         // CREATE_STACK might also target hand cards (e.g. Revealed), but calculateValidTargets primarily checks board.
-         // If targetOwnerId restriction allows hand targets (which are checked in App.tsx handleGlobalMouseUp),
-         // we might need a broader check.
-         // However, in this app, "No Valid Targets" usually refers to board constraints.
-         // If a stack *can* be placed on hand, we should check hand too.
-         // Most stack abilities target board.
-         // Exception: 'Revealed' token.
          
          if (boardTargets.length > 0) return true;
          
          // Check Hand targets if stack type is compatible
-         // Currently, only 'Revealed' and 'Power+/-' target hands significantly via stack?
-         // Let's check for 'Revealed' specifically or if targetOwnerId is set
+         // Check if 'Revealed' or simple buffs/debuffs
          if (action.tokenType === 'Revealed' || action.tokenType?.startsWith('Power')) {
-             return true; // Assume hand is always a valid target for these? Or check specifically.
-             // For now, strict board check for combat tokens is safest.
+             // We need to check if ANY hand card is valid
+             for (const p of currentGameState.players) {
+                 for (let i = 0; i < p.hand.length; i++) {
+                     const constraints = {
+                          targetOwnerId: action.targetOwnerId,
+                          excludeOwnerId: action.excludeOwnerId,
+                          onlyOpponents: action.onlyOpponents,
+                          onlyFaceDown: action.onlyFaceDown,
+                          tokenType: action.tokenType
+                     };
+                     const isValid = validateTarget(
+                         { card: p.hand[i], ownerId: p.id, location: 'hand' },
+                         constraints,
+                         playerId,
+                         currentGameState.players
+                     );
+                     if (isValid) return true;
+                 }
+             }
          }
          
          return false; 

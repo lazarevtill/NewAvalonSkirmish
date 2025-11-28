@@ -1,12 +1,11 @@
-import { AbilityAction, isLine } from './autoAbilities';
-import { Card, GameState } from '../types';
+import { AbilityAction, Card, GameState } from '../types';
 
 /**
  * Maps specific Command Card IDs and Option Indices to Game Actions.
  * 
- * @param cardId The ID of the command card (e.g., 'overwatch', 'inspiration').
- * @param optionIndex -1 for Main Ability, 0-2 for Sub Options.
- * @param card The card object itself.
+ * @param cardId The ID of the command card.
+ * @param optionIndex -1 for Main Ability (First step), 0 or 1 for Sub Options (Second step/Consequence).
+ * @param card The card object.
  * @param gameState The current game state.
  * @param localPlayerId The ID of the player executing the command.
  */
@@ -17,14 +16,13 @@ export const getCommandAction = (
     gameState: GameState,
     localPlayerId: number
 ): AbilityAction | null => {
-    const baseId = card.baseId || cardId.split('_')[1]?.toLowerCase() || cardId; // Robust fallback
+    const baseId = (card.baseId || cardId.split('_')[1] || cardId).toLowerCase(); 
     const isMain = optionIndex === -1;
 
     // --- OVERWATCH ---
     if (baseId.includes('overwatch')) {
+        // 1. Common Step: Place 1 Aim on any card.
         if (isMain) {
-            // Main: "Place 1 aim token on any card on the battlefield."
-            // Use CREATE_STACK to attach token to cursor
             return {
                 type: 'CREATE_STACK',
                 tokenType: 'Aim',
@@ -32,32 +30,19 @@ export const getCommandAction = (
                 sourceCard: card
             };
         }
-        // Sub 0: "Move units with your aim 1 or 2 cells." 
+        // Option 0: Reveal X cards from opponent hand (X = Total Aim).
         if (optionIndex === 0) {
-            return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_UNIT_FOR_MOVE',
-                sourceCard: card,
-                payload: {
-                    // Select unit with player's Aim
-                    filter: (target: Card) => target.statuses?.some(s => s.type === 'Aim' && s.addedByPlayerId === localPlayerId),
-                    range: 2 
-                }
-            };
-        }
-        // Sub 1: "Reveal 1 card for each of your aim."
-        // USE DYNAMIC COUNTING so it calculates AFTER base module runs.
-        if (optionIndex === 1) {
             return { 
                 type: 'CREATE_STACK', 
                 tokenType: 'Revealed', 
                 dynamicCount: { factor: 'Aim', ownerId: localPlayerId },
+                targetOwnerId: -1, // -1 means Opponents Only
+                onlyOpponents: true, // Redundant but explicit
                 sourceCard: card
             };
         }
-        // Sub 2: "Draw 1 card for each of your aim."
-        // USE DYNAMIC RESOURCE so it calculates AFTER base module runs.
-        if (optionIndex === 2) {
+        // Option 1: Draw X cards (X = Total Aim).
+        if (optionIndex === 1) {
              return {
                  type: 'GLOBAL_AUTO_APPLY', 
                  payload: { dynamicResource: { type: 'draw', factor: 'Aim', ownerId: localPlayerId } },
@@ -66,103 +51,63 @@ export const getCommandAction = (
         }
     }
 
-    // --- TACTICAL MANEUVER (Repositioning) ---
-    if (baseId.includes('tacticalmaneuver') || baseId.includes('repositioning')) {
-        if (isMain) {
-            // Main: "Move your unit to any cell in a line."
-            // RECORD CONTEXT so we know where it landed for sub-options.
-            return {
+    // --- TACTICAL MANEUVER ---
+    if (baseId.includes('tacticalmaneuver')) {
+        // Option 0: Move Own Unit -> Draw = Power.
+        if (optionIndex === 0) {
+             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_UNIT_FOR_MOVE',
                 recordContext: true,
                 sourceCard: card,
                 payload: {
                     range: 'line', 
-                    filter: (target: Card) => target.ownerId === localPlayerId
+                    filter: (target: Card) => target.ownerId === localPlayerId,
+                    chainedAction: { type: 'GLOBAL_AUTO_APPLY', payload: { contextReward: 'DRAW_MOVED_POWER' }, sourceCard: card }
                 }
             };
         }
-        // Sub 0: "Draw cards equal to the power of an adjacent allied unit."
-        // Context Check: adjacent to the card moved in base module
-        if (optionIndex === 0) {
-             return {
-                 type: 'ENTER_MODE',
-                 mode: 'SELECT_TARGET',
-                 contextCheck: 'ADJACENT_TO_LAST_MOVE',
-                 sourceCard: card,
-                 payload: {
-                     actionType: 'DRAW_EQUAL_POWER',
-                     filter: (target: Card) => target.ownerId === localPlayerId
-                 }
-             };
-        }
-        // Sub 1: "Move your unit 1 or 2 cells."
+        // Option 1: Move Own Unit -> Score = Power.
         if (optionIndex === 1) {
-            return {
+             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_UNIT_FOR_MOVE',
+                recordContext: true,
                 sourceCard: card,
                 payload: {
+                    range: 'line', 
                     filter: (target: Card) => target.ownerId === localPlayerId,
-                    range: 2
+                    chainedAction: { type: 'GLOBAL_AUTO_APPLY', payload: { contextReward: 'SCORE_MOVED_POWER' }, sourceCard: card }
                 }
             };
         }
-        // Sub 2: "Gain points equal to the power of one of the moved units."
-        // Implemented as: Select ally adjacent to card moved by base module
-        if (optionIndex === 2) {
-             return {
-                 type: 'ENTER_MODE',
-                 mode: 'SELECT_TARGET',
-                 contextCheck: 'ADJACENT_TO_LAST_MOVE',
-                 sourceCard: card,
-                 payload: {
-                     actionType: 'SCORE_EQUAL_POWER',
-                     filter: (target: Card) => target.ownerId === localPlayerId
-                 }
-             };
-        }
+        // Main action is null because the options define the entire sequence (Select -> Move -> Reward)
+        return null; 
     }
 
     // --- INSPIRATION ---
     if (baseId.includes('inspiration')) {
+        // 3. Common Step: Select Own Unit -> Open Modal.
         if (isMain) {
-            // "Remove any number of counters from your unit."
-            // Simplified: Select a unit -> Remove ALL counters.
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
                 sourceCard: card,
                 payload: {
-                    actionType: 'REMOVE_ALL_COUNTERS_SELF',
+                    actionType: 'OPEN_COUNTER_MODAL',
                     filter: (target: Card) => target.ownerId === localPlayerId
                 }
             };
         }
-        if (optionIndex === 0) {
-             return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_UNIT_FOR_MOVE',
-                sourceCard: card,
-                payload: { 
-                    filter: (target: Card) => target.ownerId === localPlayerId,
-                    range: 2 
-                }
-            };
-        }
-        if (optionIndex === 1) {
-             return { type: 'GLOBAL_AUTO_APPLY', sourceCard: card, payload: { resourceChange: { draw: 2 } } };
-        }
-        if (optionIndex === 2) {
-             return { type: 'GLOBAL_AUTO_APPLY', sourceCard: card, payload: { resourceChange: { score: 2 } } };
-        }
+        // Note: The Reward (Draw vs Score) is passed via the 'rewardType' payload in handleCommandConfirm 
+        // effectively injecting it into the Main Action. We return null here because the logic is inside the modal callback.
+        return null; 
     }
 
     // --- DATA INTERCEPTION ---
     if (baseId.includes('datainterception')) {
+        // 4. Common Step: Place 1 Exploit.
         if (isMain) {
-            // Main: "Place 1 exploit token on any card."
-            // Use CREATE_STACK
             return { 
                 type: 'CREATE_STACK', 
                 tokenType: 'Exploit', 
@@ -170,8 +115,20 @@ export const getCommandAction = (
                 sourceCard: card
             };
         }
+        // Option 0: Reveal X from Opponent Hand (X = Total Exploit).
         if (optionIndex === 0) {
-            return {
+            return { 
+                type: 'CREATE_STACK', 
+                tokenType: 'Revealed', 
+                dynamicCount: { factor: 'Exploit', ownerId: localPlayerId },
+                onlyOpponents: true,
+                targetOwnerId: -1, // -1 means Opponents Only
+                sourceCard: card
+            };
+        }
+        // Option 1: Move unit with Own Exploit to Line Empty Cell.
+        if (optionIndex === 1) {
+             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_UNIT_FOR_MOVE',
                 sourceCard: card,
@@ -181,81 +138,48 @@ export const getCommandAction = (
                 }
             };
         }
-        if (optionIndex === 1) {
-             let exploitCount = 0;
-            gameState.board.forEach(row => row.forEach(cell => {
-                if (cell.card?.statuses?.some(s => s.type === 'Exploit' && s.addedByPlayerId === localPlayerId)) {
-                    exploitCount++;
-                }
-            }));
-            if (exploitCount > 0) return { type: 'CREATE_STACK', tokenType: 'Revealed', count: exploitCount, sourceCard: card };
-            return null;
-        }
-        if (optionIndex === 2) {
-             let maxPower = 0;
-             gameState.board.forEach(row => row.forEach(cell => {
-                 const c = cell.card;
-                 if (c && (c.revealedTo === 'all' || c.statuses?.some(s => s.type === 'Revealed'))) {
-                     if (c.power > maxPower) maxPower = c.power;
-                 }
-             }));
-             return { type: 'GLOBAL_AUTO_APPLY', sourceCard: card, payload: { resourceChange: { draw: maxPower } } };
-        }
     }
 
     // --- FALSE ORDERS ---
     if (baseId.includes('falseorders')) {
+        // 5. Common Step: Place 1 Exploit on Opponent.
         if (isMain) {
-            return {
-                type: 'ENTER_MODE',
-                mode: 'SELECT_UNIT_FOR_MOVE',
-                sourceCard: card,
-                payload: {
-                    filter: (target: Card) => target.ownerId !== localPlayerId,
-                    range: 2
-                }
+            return { 
+                type: 'CREATE_STACK', 
+                tokenType: 'Exploit', 
+                count: 1,
+                onlyOpponents: true,
+                sourceCard: card
             };
         }
+        // Option 0: Move Opponent w/ Exploit (Range 2) -> Reveal x2 (Owner's hand).
         if (optionIndex === 0) {
              return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_UNIT_FOR_MOVE',
+                recordContext: true,
                 sourceCard: card,
                 payload: { 
-                    filter: (target: Card) => target.ownerId !== localPlayerId,
-                    range: 2
+                    filter: (target: Card) => target.ownerId !== localPlayerId && target.statuses?.some(s => s.type === 'Exploit' && s.addedByPlayerId === localPlayerId),
+                    range: 2,
+                    chainedAction: { type: 'CREATE_STACK', tokenType: 'Revealed', count: 2, targetOwnerId: -2, onlyFaceDown: true } // -2 targetOwnerId means "Owner of moved card"
                 }
             };
         }
+        // Option 1: Move Opponent w/ Exploit (Range 2) -> Stun 1.
         if (optionIndex === 1) {
              return {
                 type: 'ENTER_MODE',
-                mode: 'SELECT_TARGET',
+                mode: 'SELECT_UNIT_FOR_MOVE',
+                recordContext: true,
                 sourceCard: card,
-                payload: {
-                    tokenType: 'Stun',
-                    filter: (target: Card) => target.ownerId !== localPlayerId
+                payload: { 
+                    filter: (target: Card) => target.ownerId !== localPlayerId && target.statuses?.some(s => s.type === 'Exploit' && s.addedByPlayerId === localPlayerId),
+                    range: 2,
+                    chainedAction: { type: 'GLOBAL_AUTO_APPLY', payload: { contextReward: 'STUN_MOVED_UNIT' } }
                 }
             };
         }
-        if (optionIndex === 2) {
-             return {
-                 type: 'ENTER_MODE',
-                 mode: 'SELECT_TARGET',
-                 sourceCard: card,
-                 payload: {
-                     actionType: 'DRAW_EQUAL_POWER',
-                     filter: (target: Card) => target.ownerId !== localPlayerId
-                 }
-             };
-        }
-    }
-
-    // Default/Mobilization (No Sub Options)
-    if (isMain) {
-        if (baseId.includes('mobilization1')) return { type: 'ENTER_MODE', mode: 'SELECT_LINE_END', sourceCard: card, payload: { actionType: 'SCORE_LINE' } };
-        if (baseId.includes('mobilization2')) return null; 
-        if (baseId.includes('mobilization3')) return null; 
     }
 
     return null;
