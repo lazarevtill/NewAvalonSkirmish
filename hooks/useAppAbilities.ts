@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Card, GameState, AbilityAction, CommandContext, DragItem, Player, CounterSelectionData, CursorStackState } from '../types';
 import { getCardAbilityAction, canActivateAbility } from '../utils/autoAbilities';
 import { checkActionHasTargets } from '../utils/targeting';
@@ -75,6 +75,361 @@ export const useAppAbilities = ({
     removeStatusByType
 }: UseAppAbilitiesProps) => {
 
+    const handleActionExecution = useCallback((action: AbilityAction, sourceCoords: { row: number, col: number }) => {
+        // 1. Global Auto Apply
+        if (action.type === 'GLOBAL_AUTO_APPLY') {
+            if (action.payload?.customAction === 'FINN_SCORING') {
+                let revealedCount = 0;
+                gameState.players.forEach(p => {
+                    if (p.id !== action.sourceCard?.ownerId) {
+                        p.hand.forEach(c => {
+                            if (c.statuses?.some(s => s.type === 'Revealed')) revealedCount++;
+                        });
+                    }
+                });
+                if (revealedCount > 0) {
+                    updatePlayerScore(action.sourceCard?.ownerId!, revealedCount);
+                }
+                markAbilityUsed(sourceCoords, !!action.isDeployAbility);
+                return;
+            }
+
+            // Handle Removing Aim from Context (Temporary Shelter)
+            if (action.payload?.customAction === 'REMOVE_ALL_AIM_FROM_CONTEXT') {
+                // Priority: Injected sourceCoords (Immediate) > Context (Stored) > Argument sourceCoords (Fallback)
+                if (action.sourceCoords && action.sourceCoords.row >= 0) {
+                     removeStatusByType(action.sourceCoords, 'Aim');
+                } else if (commandContext.lastMovedCardCoords) {
+                    removeStatusByType(commandContext.lastMovedCardCoords, 'Aim');
+                } else if (sourceCoords && sourceCoords.row >= 0) {
+                    // Fallback to sourceCoords if context is stale (immediate chain)
+                    removeStatusByType(sourceCoords, 'Aim');
+                }
+                return;
+            }
+
+            if (action.payload && !action.payload.cleanupCommand) {
+                const { tokenType, filter } = action.payload;
+                const targets: { row: number, col: number }[] = [];
+                const gridSize = gameState.board.length;
+
+                // Handle Context Rewards (Tactical Maneuver)
+                if (action.payload.contextReward && action.sourceCard) {
+                    let amount = 0;
+                    
+                    // Priority: Passed sourceCoords (immediate from chain) > Context (async/stored)
+                    // Note: sourceCoords arg is the destination of the move in chained calls.
+                    const coords = (sourceCoords && sourceCoords.row >= 0) ? sourceCoords : commandContext.lastMovedCardCoords;
+
+                    if (coords) {
+                        const { row, col } = coords;
+                        
+                        // Try getting card at new location (might fail if state is stale)
+                        let card = gameState.board[row][col].card;
+                        
+                        // FIX: STALE STATE HANDLING
+                        // If board is stale (card not moved yet in this render cycle), looking at destination might yield null.
+                        // We use the ID to find where the card *currently* is (which is the OLD position in stale state) 
+                        // so we can at least read its Power correctly.
+                        
+                        // Priority: _tempContextId (injected) > lastMovedCardId (context)
+                        const searchId = action.payload._tempContextId || commandContext.lastMovedCardId;
+
+                        if ((!card || (searchId && card.id !== searchId)) && searchId) {
+                            for (let r = 0; r < gridSize; r++) {
+                                for (let c = 0; c < gridSize; c++) {
+                                    if (gameState.board[r][c].card?.id === searchId) {
+                                        card = gameState.board[r][c].card;
+                                        break;
+                                    }
+                                }
+                                if (card) break;
+                            }
+                        }
+
+                        if (card) {
+                            amount = Math.max(0, card.power + (card.powerModifier || 0) + (card.bonusPower || 0));
+                        }
+                    }
+
+                    if (amount > 0) {
+                        const playerId = action.sourceCard.ownerId!;
+                        const rewardType = action.payload.contextReward;
+                        if (rewardType === 'DRAW_MOVED_POWER' || rewardType === 'DRAW_EQUAL_POWER') {
+                            for(let i=0; i<amount; i++) drawCard(playerId);
+                        } else if (rewardType === 'SCORE_MOVED_POWER') {
+                            updatePlayerScore(playerId, amount);
+                        }
+                    }
+                    
+                    if (action.payload.contextReward === 'STUN_MOVED_UNIT' && coords) {
+                        addBoardCardStatus(coords, 'Stun', action.sourceCard.ownerId!);
+                    }
+                    return;
+                }
+
+                if (filter) {
+                     // Standard filtering
+                    for (let r = 0; r < gridSize; r++) {
+                        for (let c = 0; c < gridSize; c++) {
+                            const targetCard = gameState.board[r][c].card;
+                            if (targetCard && filter(targetCard)) {
+                                targets.push({ row: r, col: c });
+                            }
+                        }
+                    }
+                } else {
+                    // Context / Single Target (No Filter)
+                    // Prefer immediate action.sourceCoords if available (chain injected)
+                    if (action.sourceCoords && action.sourceCoords.row >= 0) {
+                        targets.push(action.sourceCoords);
+                    } else if (sourceCoords && sourceCoords.row >= 0) {
+                        targets.push(sourceCoords);
+                    } else if (commandContext.lastMovedCardCoords) {
+                        targets.push(commandContext.lastMovedCardCoords);
+                    }
+                }
+
+                if (targets.length > 0) {
+                    // For Global Apply of Stun/etc., standard applyGlobalEffect uses 1 token
+                    if (tokenType) {
+                        // Special handling for multiple tokens in Global Apply (e.g. False Orders Stun x2)
+                        // applyGlobalEffect is singular. We loop if needed or just call it. 
+                        const count = action.payload.count || 1;
+                        // Allow payload to override ownerId (for False Orders Mode 2)
+                        const addedBy = action.payload.ownerId !== undefined ? action.payload.ownerId : action.sourceCard?.ownerId!;
+                        
+                        for(let i=0; i<count; i++) {
+                             applyGlobalEffect(sourceCoords, targets, tokenType, addedBy, !!action.isDeployAbility);
+                        }
+                    }
+                } else {
+                    setNoTargetOverlay(sourceCoords);
+                    markAbilityUsed(sourceCoords, !!action.isDeployAbility);
+                    setTimeout(() => setNoTargetOverlay(null), 750);
+                }
+                return;
+            }
+        }
+
+        // 2. Check Valid Targets (Perform this BEFORE Dynamic calculation to fail fast if needed, but for stacks we check inside)
+        const hasTargets = checkActionHasTargets(action, gameState, action.sourceCard?.ownerId || localPlayerId, commandContext);
+
+        if (!hasTargets) { 
+            // Rule 4: Show "No Target"
+            setNoTargetOverlay(sourceCoords);
+            
+            // Rule 5: If part of a chain has no targets, execute the rest (chainedAction).
+            if (action.chainedAction) {
+                setTimeout(() => {
+                    setNoTargetOverlay(null);
+                    handleActionExecution(action.chainedAction!, sourceCoords);
+                }, 500); 
+            } else {
+                markAbilityUsed(sourceCoords, !!action.isDeployAbility);
+                setTimeout(() => setNoTargetOverlay(null), 750);
+            }
+            return;
+        }
+
+        // 3. Execution (Targets Exist)
+        if (action.type === 'CREATE_STACK' && action.tokenType) {
+            let count = action.count || 0;
+
+            // Handle Dynamic Count (e.g. Count Exploits on board to determine Reveals)
+            if (action.dynamicCount) {
+                const { factor, ownerId } = action.dynamicCount;
+                let dynamic = 0;
+                gameState.board.forEach(r => r.forEach(c => {
+                     // Count matching tokens, not just cards.
+                     if (c.card?.statuses) {
+                         const matchingTokens = c.card.statuses.filter(s => s.type === factor && s.addedByPlayerId === ownerId);
+                         dynamic += matchingTokens.length;
+                     }
+                }));
+                count = dynamic;
+            }
+
+            if (count > 0) {
+                setCursorStack({
+                    type: action.tokenType,
+                    count: count,
+                    isDragging: false,
+                    sourceCoords: sourceCoords,
+                    excludeOwnerId: action.excludeOwnerId,
+                    onlyOpponents: action.onlyOpponents,
+                    onlyFaceDown: action.onlyFaceDown,
+                    targetType: action.targetType, // New prop
+                    isDeployAbility: action.isDeployAbility,
+                    requiredTargetStatus: action.requiredTargetStatus,
+                    requireStatusFromSourceOwner: action.requireStatusFromSourceOwner, // New prop
+                    mustBeAdjacentToSource: action.mustBeAdjacentToSource,
+                    mustBeInLineWithSource: action.mustBeInLineWithSource,
+                    placeAllAtOnce: action.placeAllAtOnce,
+                    chainedAction: action.chainedAction,
+                    targetOwnerId: action.targetOwnerId,
+                    recordContext: action.recordContext // New prop
+                });
+            } else {
+                // If dynamic count resulted in 0, we treat it as "No Targets/No Action"
+                setNoTargetOverlay(sourceCoords);
+                setTimeout(() => setNoTargetOverlay(null), 750);
+                // If there's a chain, we might want to continue, but usually 0 tokens means stop.
+                markAbilityUsed(sourceCoords, !!action.isDeployAbility);
+            }
+
+        } else if (action.type === 'ENTER_MODE') {
+            // Special Immediate Modes (Compound atomic actions)
+            if (action.mode === 'SHIELD_SELF_THEN_SPAWN') {
+                addBoardCardStatus(sourceCoords, 'Shield', action.sourceCard!.ownerId!);
+                setAbilityMode({
+                    type: 'ENTER_MODE',
+                    mode: 'SPAWN_TOKEN',
+                    sourceCard: action.sourceCard,
+                    sourceCoords: sourceCoords,
+                    isDeployAbility: action.isDeployAbility,
+                    payload: action.payload
+                });
+                return;
+            }
+            if (action.mode === 'SHIELD_SELF_THEN_RIOT_PUSH') {
+                addBoardCardStatus(sourceCoords, 'Shield', action.sourceCard!.ownerId!);
+                setAbilityMode({
+                    type: 'ENTER_MODE',
+                    mode: 'RIOT_PUSH',
+                    sourceCard: action.sourceCard,
+                    sourceCoords: sourceCoords,
+                    isDeployAbility: action.isDeployAbility,
+                    payload: action.payload
+                });
+                return;
+            }
+            if (action.mode === 'PRINCEPS_SHIELD_THEN_AIM') {
+                addBoardCardStatus(sourceCoords, 'Shield', action.sourceCard!.ownerId!);
+                setCursorStack({
+                    type: 'Aim',
+                    count: 1,
+                    isDragging: false,
+                    sourceCoords: sourceCoords,
+                    requiredTargetStatus: 'Threat',
+                    isDeployAbility: action.isDeployAbility
+                });
+                return;
+            }
+            if (action.mode === 'ABR_DEPLOY_SHIELD_AIM') {
+                // 1. Shield Self automatically
+                const actorId = action.sourceCard!.ownerId!;
+                addBoardCardStatus(sourceCoords, 'Shield', actorId);
+
+                // 2. Define the Aim Stack action
+                const aimStackAction: AbilityAction = {
+                    type: 'CREATE_STACK',
+                    tokenType: 'Aim',
+                    count: 1,
+                    requiredTargetStatus: 'Threat',
+                    requireStatusFromSourceOwner: true, // Only own threat
+                    sourceCard: action.sourceCard,
+                    sourceCoords: sourceCoords,
+                    isDeployAbility: action.isDeployAbility
+                };
+
+                // 3. Check Valid Targets -> Stack Mode or No Target
+                if (checkActionHasTargets(aimStackAction, gameState, actorId, commandContext)) {
+                     setCursorStack({
+                         type: 'Aim',
+                         count: 1,
+                         isDragging: false,
+                         sourceCoords: sourceCoords,
+                         requiredTargetStatus: 'Threat',
+                         requireStatusFromSourceOwner: true, // Pass to cursor state
+                         isDeployAbility: action.isDeployAbility
+                     });
+                } else {
+                     setNoTargetOverlay(sourceCoords);
+                     markAbilityUsed(sourceCoords, !!action.isDeployAbility);
+                     setTimeout(() => setNoTargetOverlay(null), 750);
+                }
+                return;
+            }
+
+            // Standard Mode Entry
+            
+            let effectiveSourceCard = action.sourceCard;
+            let effectiveSourceCoords = sourceCoords;
+
+            // Prioritize action.sourceCoords if explicitly set (e.g. from chained injections in useAppCounters)
+            if (action.sourceCoords && action.sourceCoords.row >= 0) {
+                effectiveSourceCoords = action.sourceCoords;
+            }
+
+            // If this is a SELECT_CELL mode (Move), check if we should use the card from context (False Orders case)
+            if (action.mode === 'SELECT_CELL' && commandContext.lastMovedCardCoords && commandContext.lastMovedCardId) {
+                 const { row, col } = commandContext.lastMovedCardCoords;
+                 const contextCard = gameState.board[row][col].card;
+                 if (contextCard) {
+                     effectiveSourceCard = contextCard;
+                     effectiveSourceCoords = commandContext.lastMovedCardCoords;
+                 }
+            }
+
+            setAbilityMode({
+                ...action,
+                sourceCard: effectiveSourceCard,
+                sourceCoords: effectiveSourceCoords
+            });
+
+        } else if (action.type === 'OPEN_MODAL') {
+            // Modal logic (unchanged essentially, but wrapped)
+            if (action.mode === 'RETRIEVE_DEVICE') {
+                const player = gameState.players.find(p => p.id === action.sourceCard?.ownerId);
+                if (player) {
+                    setViewingDiscard({
+                        player,
+                        pickConfig: { filterType: 'Device', action: 'recover' }
+                    });
+                    if (sourceCoords.row >= 0) markAbilityUsed(sourceCoords, !!action.isDeployAbility);
+                }
+            } else if (action.mode === 'IMMUNIS_RETRIEVE') {
+                const player = gameState.players.find(p => p.id === action.sourceCard?.ownerId);
+                if (player) {
+                    setViewingDiscard({
+                        player,
+                        pickConfig: { filterType: 'Optimates', action: 'resurrect' }
+                    });
+                    setAbilityMode({
+                        type: 'ENTER_MODE',
+                        mode: 'IMMUNIS_RETRIEVE',
+                        sourceCard: action.sourceCard,
+                        sourceCoords: sourceCoords,
+                        isDeployAbility: action.isDeployAbility,
+                        payload: action.payload
+                    });
+                }
+            } else if (action.mode === 'SEARCH_DECK') {
+                const player = gameState.players.find(p => p.id === action.sourceCard?.ownerId);
+                if (player) {
+                    setViewingDiscard({
+                        player,
+                        pickConfig: { 
+                            filterType: action.payload.filterType || 'Unit', 
+                            action: 'recover', 
+                            isDeck: true 
+                        }
+                    });
+                    if (sourceCoords.row >= 0) markAbilityUsed(sourceCoords, !!action.isDeployAbility);
+                }
+            }
+        }
+    }, [gameState, localPlayerId, commandContext, markAbilityUsed, setAbilityMode, setCursorStack, setNoTargetOverlay, applyGlobalEffect, setViewingDiscard, addBoardCardStatus, updatePlayerScore, drawCard, removeBoardCardStatus, removeStatusByType]);
+
+    // Auto-Execute GLOBAL_AUTO_APPLY actions when they appear in abilityMode
+    useEffect(() => {
+        if (abilityMode && abilityMode.type === 'GLOBAL_AUTO_APPLY') {
+            handleActionExecution(abilityMode, abilityMode.sourceCoords || { row: -1, col: -1 });
+            setAbilityMode(null);
+        }
+    }, [abilityMode, handleActionExecution, setAbilityMode]);
+
     const activateAbility = useCallback((card: Card, boardCoords: { row: number, col: number }) => {
         if (abilityMode || cursorStack) return;
         if (!gameState.isGameStarted || localPlayerId === null) return;
@@ -89,235 +444,9 @@ export const useAppAbilities = ({
 
         const action = getCardAbilityAction(card, gameState, card.ownerId!, boardCoords);
         if (action) {
-            if (action.type === 'GLOBAL_AUTO_APPLY') {
-                if (action.payload?.customAction === 'FINN_SCORING') {
-                    // Count revealed cards in all opponents' hands
-                    let revealedCount = 0;
-                    gameState.players.forEach(p => {
-                        if (p.id !== card.ownerId) {
-                            p.hand.forEach(c => {
-                                if (c.statuses?.some(s => s.type === 'Revealed')) revealedCount++;
-                            });
-                        }
-                    });
-                    if (revealedCount > 0) {
-                        updatePlayerScore(card.ownerId!, revealedCount);
-                    }
-                    markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                    return;
-                }
-
-                if (action.payload && !action.payload.cleanupCommand) {
-                    const { tokenType, filter } = action.payload;
-                    const targets: { row: number, col: number }[] = [];
-                    const gridSize = gameState.board.length;
-
-                    for (let r = 0; r < gridSize; r++) {
-                        for (let c = 0; c < gridSize; c++) {
-                            const targetCard = gameState.board[r][c].card;
-                            if (targetCard && filter(targetCard)) {
-                                targets.push({ row: r, col: c });
-                            }
-                        }
-                    }
-
-                    if (targets.length > 0) {
-                        applyGlobalEffect(boardCoords, targets, tokenType, card.ownerId!, !!action.isDeployAbility);
-                    } else {
-                        setNoTargetOverlay(boardCoords);
-                        markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                        setTimeout(() => setNoTargetOverlay(null), 750);
-                    }
-                    return;
-                }
-            }
-
-            if (action.type === 'CREATE_STACK' && action.tokenType && action.count) {
-                const hasTargets = checkActionHasTargets(action, gameState, card.ownerId!, commandContext);
-                
-                if (!hasTargets) {
-                    setNoTargetOverlay(boardCoords);
-                    markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                    setTimeout(() => setNoTargetOverlay(null), 750);
-                    return;
-                }
-                
-                setCursorStack({
-                    type: action.tokenType,
-                    count: action.count,
-                    isDragging: false,
-                    sourceCoords: boardCoords,
-                    excludeOwnerId: action.excludeOwnerId,
-                    onlyOpponents: action.onlyOpponents,
-                    onlyFaceDown: action.onlyFaceDown,
-                    isDeployAbility: action.isDeployAbility,
-                    requiredTargetStatus: action.requiredTargetStatus,
-                    mustBeAdjacentToSource: action.mustBeAdjacentToSource,
-                    mustBeInLineWithSource: action.mustBeInLineWithSource,
-                    placeAllAtOnce: action.placeAllAtOnce,
-                    chainedAction: action.chainedAction
-                });
-            } else if (action.type === 'ENTER_MODE') {
-                if (action.mode === 'SHIELD_SELF_THEN_SPAWN') {
-                    // Edith Byron: Shield Self immediately, then enter spawn mode
-                    addBoardCardStatus(boardCoords, 'Shield', card.ownerId!);
-                    setAbilityMode({
-                        type: 'ENTER_MODE',
-                        mode: 'SPAWN_TOKEN',
-                        sourceCard: card,
-                        sourceCoords: boardCoords,
-                        isDeployAbility: action.isDeployAbility,
-                        payload: action.payload
-                    });
-                    return;
-                }
-                if (action.mode === 'SHIELD_SELF_THEN_RIOT_PUSH') {
-                    // Reclaimed Gawain: Shield Self immediately, then enter RIOT_PUSH mode
-                    addBoardCardStatus(boardCoords, 'Shield', card.ownerId!);
-                    setAbilityMode({
-                        type: 'ENTER_MODE',
-                        mode: 'RIOT_PUSH',
-                        sourceCard: card,
-                        sourceCoords: boardCoords,
-                        isDeployAbility: action.isDeployAbility,
-                        payload: action.payload
-                    });
-                    return;
-                }
-                if (action.mode === 'PRINCEPS_SHIELD_THEN_AIM') {
-                    // Princeps / Autonomous Gawain: Shield Self immediately, then enter Aim selection
-                    addBoardCardStatus(boardCoords, 'Shield', card.ownerId!);
-                    setCursorStack({
-                        type: 'Aim',
-                        count: 1,
-                        isDragging: false,
-                        sourceCoords: boardCoords,
-                        requiredTargetStatus: 'Threat',
-                        isDeployAbility: action.isDeployAbility
-                    });
-                    return;
-                }
-                if (action.mode === 'ABR_DEPLOY_SHIELD_AIM') {
-                    // ABR Gawain: Shield Self immediately.
-                    addBoardCardStatus(boardCoords, 'Shield', card.ownerId!);
-                    
-                    // Construct the potential Aim action
-                    const aimAction: AbilityAction = {
-                        type: 'ENTER_MODE',
-                        mode: 'SELECT_TARGET',
-                        sourceCard: card,
-                        sourceCoords: boardCoords,
-                        isDeployAbility: action.isDeployAbility,
-                        payload: {
-                            tokenType: 'Aim',
-                            count: 1,
-                            filter: action.payload.filter
-                        }
-                    };
-
-                    // Check if there are valid targets for Aim (Enemy with own Threat)
-                    const hasTargets = checkActionHasTargets(aimAction, gameState, card.ownerId!, commandContext);
-
-                    if (hasTargets) {
-                        setAbilityMode(aimAction);
-                    } else {
-                        // If no targets, show "No Target", mark deploy used, and finish.
-                        setNoTargetOverlay(boardCoords);
-                        markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                        setTimeout(() => setNoTargetOverlay(null), 750);
-                    }
-                    return;
-                }
-
-                const hasTargets = checkActionHasTargets(action, gameState, card.ownerId!, commandContext);
-                if (!hasTargets) {
-                    if (boardCoords.row >= 0) {
-                        setNoTargetOverlay(boardCoords);
-                        markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                        setTimeout(() => setNoTargetOverlay(null), 750);
-                    }
-                    return;
-                }
-                setAbilityMode(action);
-            } else if (action.type === 'OPEN_MODAL') {
-                if (action.mode === 'RETRIEVE_DEVICE') {
-                    const player = gameState.players.find(p => p.id === card.ownerId);
-                    if (player) {
-                        const hasDevices = player.discard.some(c => c.types?.includes('Device'));
-                        if (hasDevices) {
-                            setViewingDiscard({
-                                player,
-                                pickConfig: { filterType: 'Device', action: 'recover' }
-                            });
-                            if (boardCoords.row >= 0) markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                        } else {
-                            if (boardCoords.row >= 0) {
-                                setNoTargetOverlay(boardCoords);
-                                markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                                setTimeout(() => setNoTargetOverlay(null), 750);
-                            }
-                        }
-                    }
-                }
-                if (action.mode === 'IMMUNIS_RETRIEVE') {
-                    const player = gameState.players.find(p => p.id === card.ownerId);
-                    if (player) {
-                        const hasOptimates = player.discard.some(c =>
-                            (c.types?.includes('Optimates') || c.faction === 'Optimates') &&
-                            c.types?.includes('Unit')
-                        );
-                        if (hasOptimates) {
-                            setViewingDiscard({
-                                player,
-                                pickConfig: { filterType: 'Optimates', action: 'resurrect' }
-                            });
-                            setAbilityMode({
-                                type: 'ENTER_MODE',
-                                mode: 'IMMUNIS_RETRIEVE',
-                                sourceCard: card,
-                                sourceCoords: boardCoords,
-                                isDeployAbility: action.isDeployAbility,
-                                payload: action.payload
-                            });
-                        } else {
-                            if (boardCoords.row >= 0) {
-                                setNoTargetOverlay(boardCoords);
-                                markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                                setTimeout(() => setNoTargetOverlay(null), 750);
-                            }
-                        }
-                    }
-                }
-                if (action.mode === 'SEARCH_DECK') {
-                    const player = gameState.players.find(p => p.id === card.ownerId);
-                    if (player) {
-                        // For Mr. Pearl: retrieve from discard to hand (similar to device retrieve)
-                        if (action.payload.actionType === 'RETRIEVE_FROM_DISCARD') {
-                             setViewingDiscard({
-                                player,
-                                pickConfig: { 
-                                    filterType: action.payload.filterType || 'Unit', 
-                                    action: 'recover', 
-                                    isDeck: false 
-                                }
-                            });
-                        } else {
-                            // Standard Deck Search
-                            setViewingDiscard({
-                                player,
-                                pickConfig: { 
-                                    filterType: action.payload.filterType || 'Unit', 
-                                    action: 'recover', 
-                                    isDeck: true 
-                                }
-                            });
-                        }
-                        if (boardCoords.row >= 0) markAbilityUsed(boardCoords, !!action.isDeployAbility);
-                    }
-                }
-            }
+            handleActionExecution(action, boardCoords);
         }
-    }, [abilityMode, cursorStack, gameState, localPlayerId, commandContext, markAbilityUsed, setAbilityMode, setCursorStack, setNoTargetOverlay, applyGlobalEffect, setViewingDiscard, addBoardCardStatus, updatePlayerScore, removeStatusByType]);
+    }, [abilityMode, cursorStack, gameState, localPlayerId, handleActionExecution]);
 
     const handleLineSelection = useCallback((coords: { row: number, col: number }) => {
         if (!abilityMode) return;
@@ -351,7 +480,6 @@ export const useAppAbilities = ({
             if (r1 !== r2 && c1 !== c2) return;
             const actionType = payload.actionType;
             
-            // Determine Actor ID: SourceCard Owner OR Active Dummy OR Local Player
             const actorId = sourceCard?.ownerId ?? (gameState.players.find(p => p.id === gameState.activeTurnPlayerId)?.isDummy ? gameState.activeTurnPlayerId : (localPlayerId || gameState.activeTurnPlayerId));
 
             if (actionType === 'ZIUS_SCORING') {
@@ -359,12 +487,9 @@ export const useAppAbilities = ({
                 let startR = 0, endR = gridSize - 1;
                 let startC = 0, endC = gridSize - 1;
                 
-                // If clicking exactly on firstCoords (Zius), logic must decide.
-                // r1===r2 implies Row. c1===c2 implies Col.
-                // Since Zius is both, we prioritize Row (or Col, user can click other cell to be specific).
                 if (r1 === r2) { startR = endR = r1; } 
                 else if (c1 === c2) { startC = endC = c1; }
-                else return; // Should be caught by validation earlier but safe to keep
+                else return;
 
                 let exploitCount = 0;
                 for (let r = startR; r <= endR; r++) {
@@ -403,9 +528,6 @@ export const useAppAbilities = ({
             }
             else if (actionType === 'SCORE_LINE' || !actionType) {
                 scoreLine(r1, c1, r2, c2, actorId!);
-                if (sourceCard) {
-                    moveItem({ card: sourceCard, source: 'announced', playerId: actorId! }, { target: 'discard', playerId: actorId! });
-                }
                 if (gameState.isScoringStep) {
                     nextPhase();
                 }
@@ -427,9 +549,6 @@ export const useAppAbilities = ({
                 }
                 
                 scoreDiagonal(r1, c1, r2, c2, actorId!, payload.bonusType);
-                if (sourceCard) {
-                    moveItem({ card: sourceCard, source: 'announced', playerId: actorId! }, { target: 'discard', playerId: actorId! });
-                }
                 setTimeout(() => setAbilityMode(null), 100);
             }
         }
@@ -445,12 +564,44 @@ export const useAppAbilities = ({
         }
 
         if (abilityMode && abilityMode.type === 'ENTER_MODE') {
+            // Prevent clicking self unless specific modes allow it
             if (abilityMode.sourceCard && abilityMode.sourceCard.id === card.id && abilityMode.mode !== 'SELECT_LINE_START' && abilityMode.mode !== 'INTEGRATOR_LINE_SELECT' && abilityMode.mode !== 'SELECT_UNIT_FOR_MOVE' && abilityMode.mode !== 'SELECT_TARGET') return;
+            
             const { mode, payload, sourceCard, sourceCoords, isDeployAbility } = abilityMode;
             if (mode === 'SELECT_LINE_START' || mode === 'SELECT_LINE_END') { handleLineSelection(boardCoords); return; }
 
-            // Determine Actor ID: SourceCard Owner OR Active Dummy OR Local Player
             const actorId = sourceCard?.ownerId ?? (gameState.players.find(p => p.id === gameState.activeTurnPlayerId)?.isDummy ? gameState.activeTurnPlayerId : (localPlayerId || gameState.activeTurnPlayerId));
+
+            if (mode === 'SELECT_TARGET' && payload.tokenType) {
+                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
+                
+                moveItem({
+                    card: { id: 'dummy', deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
+                    source: 'counter_panel',
+                    statusType: payload.tokenType,
+                    count: payload.count || 1
+                }, { target: 'board', boardCoords });
+                
+                if (abilityMode.recordContext) {
+                    setCommandContext({ lastMovedCardCoords: boardCoords, lastMovedCardId: card.id });
+                }
+
+                if (payload.chainedAction) {
+                    const nextAction: AbilityAction = { 
+                        ...payload.chainedAction,
+                        sourceCard: card,
+                        sourceCoords: boardCoords,
+                        isDeployAbility: isDeployAbility,
+                        recordContext: true 
+                    };
+                    handleActionExecution(nextAction, boardCoords);
+                    if (nextAction.type !== 'ENTER_MODE') setAbilityMode(null);
+                } else {
+                    if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
+                    setTimeout(() => setAbilityMode(null), 100);
+                }
+                return;
+            }
 
             if (mode === 'SELECT_TARGET' && payload.actionType === 'OPEN_COUNTER_MODAL') {
                 if (payload.filter && !payload.filter(card)) return;
@@ -470,7 +621,8 @@ export const useAppAbilities = ({
                 
                 if (payload.chainedAction) {
                     const nextAction = { ...payload.chainedAction, sourceCard, sourceCoords, isDeployAbility };
-                    setAbilityMode(nextAction);
+                    handleActionExecution(nextAction, sourceCoords!);
+                    if (nextAction.type !== 'ENTER_MODE') setAbilityMode(null);
                 } else {
                     if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
                     setTimeout(() => setAbilityMode(null), 100);
@@ -504,20 +656,6 @@ export const useAppAbilities = ({
                 if (payload.filter && !payload.filter(card)) return;
                 addBoardCardStatus(boardCoords, 'Shield', actorId!);
                 removeStatusByType(boardCoords, 'Aim');
-                setTimeout(() => setAbilityMode(null), 100);
-                return;
-            }
-            
-            if (mode === 'SELECT_TARGET' && payload.tokenType) {
-                if (payload.filter && !payload.filter(card, boardCoords.row, boardCoords.col)) return;
-                moveItem({
-                    card: { id: 'dummy', deck: 'counter', name: '', imageUrl: '', fallbackImage: '', power: 0, ability: '', types: [] },
-                    source: 'counter_panel',
-                    statusType: payload.tokenType,
-                    count: payload.count || 1
-                }, { target: 'board', boardCoords });
-                
-                if (sourceCoords && sourceCoords.row >= 0) markAbilityUsed(sourceCoords, isDeployAbility);
                 setTimeout(() => setAbilityMode(null), 100);
                 return;
             }
@@ -615,7 +753,7 @@ export const useAppAbilities = ({
                         abilitySourceCoords: sourceCoords, 
                         range: payload.range, 
                         chainedAction: payload.chainedAction,
-                        originalActorId: actorId // Pass the command/ability owner through
+                        originalActorId: actorId 
                     }
                 });
                 return;
@@ -668,7 +806,7 @@ export const useAppAbilities = ({
         if (!abilityMode && !cursorStack) {
             activateAbility(card, boardCoords);
         }
-    }, [abilityMode, cursorStack, gameState, localPlayerId, interactionLock, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, setCursorStack, removeBoardCardStatus, removeBoardCardStatusByOwner, addBoardCardStatus, modifyBoardCardPower, swapCards, transferStatus, transferAllCounters, updatePlayerScore, drawCard, activateAbility, setCounterSelectionData, resetDeployStatus, removeStatusByType]);
+    }, [abilityMode, cursorStack, gameState, localPlayerId, interactionLock, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, setCursorStack, removeBoardCardStatus, removeBoardCardStatusByOwner, addBoardCardStatus, modifyBoardCardPower, swapCards, transferStatus, transferAllCounters, updatePlayerScore, drawCard, activateAbility, setCounterSelectionData, resetDeployStatus, removeStatusByType, handleActionExecution, setCommandContext, commandContext]);
 
     const handleEmptyCellClick = useCallback((boardCoords: { row: number, col: number }) => {
         if (interactionLock.current) return;
@@ -715,6 +853,12 @@ export const useAppAbilities = ({
         if (mode === 'SELECT_CELL' && sourceCard) {
             const currentCardCoords = (() => {
                 if (payload.moveFromHand) return null;
+                // If sourceCoords is provided via ENTER_MODE, trust it first
+                if (sourceCoords && sourceCoords.row >= 0) {
+                    return sourceCoords;
+                }
+                
+                // Fallback: search board
                 for (let r = 0; r < gameState.board.length; r++) {
                     for (let c = 0; c < gameState.board.length; c++) {
                         if (gameState.board[r][c].card?.id === sourceCard.id) return { row: r, col: c };
@@ -764,11 +908,12 @@ export const useAppAbilities = ({
             }
 
             if (isValidMove && currentCardCoords) {
-                const cardPower = Math.max(0, sourceCard.power + (sourceCard.powerModifier || 0));
-
                 if (payload.allowSelf && boardCoords.row === currentCardCoords.row && boardCoords.col === currentCardCoords.col) { }
                 else {
-                    moveItem({ card: sourceCard, source: 'board', boardCoords: currentCardCoords, bypassOwnershipCheck: true }, { target: 'board', boardCoords });
+                    const liveCard = gameState.board[currentCardCoords.row][currentCardCoords.col].card;
+                    if (liveCard) {
+                        moveItem({ card: liveCard, source: 'board', boardCoords: currentCardCoords, bypassOwnershipCheck: true }, { target: 'board', boardCoords });
+                    }
                 }
 
                 if (abilityMode.recordContext) {
@@ -776,37 +921,30 @@ export const useAppAbilities = ({
                 }
 
                 if (payload.chainedAction) {
+                    // Execute Chained Action properly
                     const nextAction = { ...payload.chainedAction };
+                    // Resolve special dynamic target IDs
                     if (nextAction.targetOwnerId === -2) {
                         nextAction.targetOwnerId = sourceCard.ownerId;
                     }
                     
-                    if (nextAction.type === 'CREATE_STACK') {
-                        setCursorStack({
-                            ...nextAction,
-                            isDragging: false,
-                            sourceCoords: boardCoords
-                        });
-                        setAbilityMode(null);
-                    } else if (nextAction.type === 'GLOBAL_AUTO_APPLY') {
-                        const reward = nextAction.payload.contextReward;
-                        // Use originalActorId if available (Command Owner), else actorId (Unit Owner)
-                        const effectOwnerId = payload.originalActorId !== undefined ? payload.originalActorId : actorId;
-
-                        if (reward === 'STUN_MOVED_UNIT') {
-                            addBoardCardStatus(boardCoords, 'Stun', effectOwnerId!);
-                        } else if (reward === 'DRAW_MOVED_POWER') {
-                            for(let i=0; i<cardPower; i++) drawCard(effectOwnerId!);
-                        } else if (reward === 'SCORE_MOVED_POWER') {
-                            updatePlayerScore(effectOwnerId!, cardPower);
-                        }
-                        setAbilityMode(null);
+                    // CRITICAL FIX for Tactical Maneuver: 
+                    // Inject the moved card's ID into the payload of the next action.
+                    // This allows handleActionExecution to find the card even if the React state hasn't updated the board yet.
+                    if (abilityMode.recordContext) {
+                         if (!nextAction.payload) nextAction.payload = {};
+                         nextAction.payload._tempContextId = sourceCard.id;
                     }
+
+                    handleActionExecution(nextAction, boardCoords);
+                    if (nextAction.type !== 'ENTER_MODE') setAbilityMode(null);
                 } else {
                     if (payload.abilitySourceCoords) {
                         markAbilityUsed(payload.abilitySourceCoords, isDeployAbility);
                     } else if (sourceCoords && sourceCoords.row >= 0) {
-                        markAbilityUsed(boardCoords, isDeployAbility);
+                        if (payload.originalActorId === undefined || sourceCard.ownerId === payload.originalActorId) {
+                             markAbilityUsed(sourceCoords, isDeployAbility);
+                        }
                     }
                     setTimeout(() => setAbilityMode(null), 100);
                 }
@@ -849,12 +987,12 @@ export const useAppAbilities = ({
             setTimeout(() => setAbilityMode(null), 100);
             return;
         }
-    }, [interactionLock, abilityMode, gameState, localPlayerId, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, spawnToken, setCommandContext, resurrectDiscardedCard, updatePlayerScore, addBoardCardStatus, setCursorStack, drawCard, commandContext]);
+    }, [interactionLock, abilityMode, gameState, localPlayerId, handleLineSelection, moveItem, markAbilityUsed, setAbilityMode, spawnToken, setCommandContext, resurrectDiscardedCard, updatePlayerScore, addBoardCardStatus, setCursorStack, drawCard, commandContext, handleActionExecution]);
 
     const handleHandCardClick = useCallback((player: Player, card: Card, cardIndex: number) => {
         if (interactionLock.current) return;
         
-        if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_HAND_CARD_FOR_DEPLOY') {
+        if (abilityMode && abilityMode.type === 'ENTER_MODE' && abilityMode.mode === 'SELECT_TARGET' && abilityMode.payload.actionType === 'SELECT_HAND_FOR_DEPLOY') {
             if (abilityMode.payload.filter && !abilityMode.payload.filter(card)) return;
             
             setCommandContext(prev => ({ ...prev, selectedHandCard: { playerId: player.id, cardIndex } }));
@@ -891,6 +1029,7 @@ export const useAppAbilities = ({
 
     return {
         activateAbility,
+        executeAction: handleActionExecution,
         handleLineSelection,
         handleBoardCardClick,
         handleEmptyCellClick,

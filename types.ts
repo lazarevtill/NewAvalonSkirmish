@@ -275,12 +275,15 @@ export interface CursorStackState {
     excludeOwnerId?: number; // Optional restriction - Exclusive (e.g. Vigilant Spotter: Don't reveal self)
     onlyOpponents?: boolean; // Optional restriction - Exclusive (Don't reveal self OR teammates)
     onlyFaceDown?: boolean;  // Optional restriction - Only cards that are currently hidden (Face down or unrevealed hand)
+    targetType?: string; // Optional: Restrict target by card Type (e.g., "Unit")
     isDeployAbility?: boolean; // True if the stack was created by a Deploy ability (for correct consumption tracking)
     requiredTargetStatus?: string; // Optional: target must have this status to be valid
+    requireStatusFromSourceOwner?: boolean; // Optional: target status must be added by the player executing the ability
     mustBeAdjacentToSource?: boolean; // Optional: target must be adjacent to sourceCoords
     mustBeInLineWithSource?: boolean; // Optional: target must be in line with sourceCoords
     placeAllAtOnce?: boolean; // Optional: if true, placing the stack puts ALL counters on one target instead of one by one
     chainedAction?: AbilityAction; // Optional: Action to enter immediately after the stack is depleted
+    recordContext?: boolean; // Optional: If true, saves the target to CommandContext
 }
 
 /**
@@ -313,6 +316,7 @@ export type AbilityAction = {
     onlyOpponents?: boolean;
     targetOwnerId?: number;
     excludeOwnerId?: number;
+    targetType?: string; // Optional: Restrict target by card Type
     sourceCard?: Card;
     sourceCoords?: { row: number, col: number };
     payload?: any;
@@ -320,6 +324,7 @@ export type AbilityAction = {
     recordContext?: boolean; // If true, the result of this action (e.g. move destination) is saved
     contextCheck?: 'ADJACENT_TO_LAST_MOVE'; // If set, validates targets based on saved context
     requiredTargetStatus?: string;
+    requireStatusFromSourceOwner?: boolean; // Optional: target status must be added by the player executing the ability
     mustBeAdjacentToSource?: boolean;
     mustBeInLineWithSource?: boolean;
     placeAllAtOnce?: boolean;

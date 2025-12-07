@@ -1,8 +1,8 @@
-
 import { useState, useCallback } from 'react';
-import { Card, GameState, AbilityAction, CommandContext, DragItem, Player, CounterSelectionData } from '../types';
+import { Card, GameState, AbilityAction, CommandContext, DragItem, Player, CounterSelectionData, CursorStackState } from '../types';
 import { getCommandAction } from '../utils/commandLogic';
 import { commandCardIds } from '../contentDatabase';
+import { checkActionHasTargets } from '../utils/targeting';
 
 interface UseAppCommandProps {
     gameState: GameState;
@@ -15,6 +15,9 @@ interface UseAppCommandProps {
     drawCard: (playerId: number) => void;
     updatePlayerScore: (playerId: number, delta: number) => void;
     removeBoardCardStatus: (coords: any, status: string) => void;
+    setCursorStack: React.Dispatch<React.SetStateAction<CursorStackState | null>>;
+    setAbilityMode: React.Dispatch<React.SetStateAction<AbilityAction | null>>;
+    setNoTargetOverlay: React.Dispatch<React.SetStateAction<{ row: number, col: number } | null>>;
 }
 
 export const useAppCommand = ({
@@ -27,7 +30,10 @@ export const useAppCommand = ({
     moveItem,
     drawCard,
     updatePlayerScore,
-    removeBoardCardStatus
+    removeBoardCardStatus,
+    setCursorStack,
+    setAbilityMode,
+    setNoTargetOverlay
 }: UseAppCommandProps) => {
 
     const playCommandCard = useCallback((card: Card, source: DragItem) => {
@@ -44,20 +50,40 @@ export const useAppCommand = ({
         setCommandContext({});
 
         const baseId = (card.baseId || card.id.split('_')[1] || card.id).toLowerCase();
-        const complexCommands = ['overwatch', 'tacticalmaneuver', 'repositioning', 'inspiration', 'datainterception', 'falseorders'];
+        const complexCommands = [
+            'overwatch', 
+            'tacticalmaneuver', 
+            'repositioning', 
+            'inspiration', 
+            'datainterception', 
+            'falseorders',
+            'experimentalstimulants',
+            'logisticschain',
+            'quickresponseteam',
+            'temporaryshelter',
+            'enhancedinterrogation'
+        ];
 
         // 2. Check type
-        // If it's one of the 5 complex commands, ALWAYS open the modal.
-        // Using lowercase matching to be safe
+        // If it's one of the complex commands, ALWAYS open the modal.
         if (complexCommands.some(id => baseId.includes(id))) {
             setCommandModalCard(card);
         } else {
             // Simple Command (e.g. Mobilization)
             // Just execute Main Logic
-            const mainAction = getCommandAction(card.id, -1, card, gameState, source.playerId!);
-            if (mainAction) {
+            const actions = getCommandAction(card.id, -1, card, gameState, source.playerId!);
+            
+            // Queue actions + Cleanup
+            if (actions.length > 0) {
+                // If the first action has targets, queue it. If not, maybe skip?
+                // For safety, we queue it and let the processor handle "No Target".
                 setActionQueue([
-                    mainAction,
+                    ...actions,
+                    { type: 'GLOBAL_AUTO_APPLY', payload: { cleanupCommand: true, card: card, ownerId: source.playerId! }, sourceCard: card }
+                ]);
+            } else {
+                // No actions defined (unlikely if in DB), just cleanup
+                setActionQueue([
                     { type: 'GLOBAL_AUTO_APPLY', payload: { cleanupCommand: true, card: card, ownerId: source.playerId! }, sourceCard: card }
                 ]);
             }
@@ -70,23 +96,33 @@ export const useAppCommand = ({
         const ownerId = commandModalCard.ownerId || localPlayerId;
         const queue: AbilityAction[] = [];
 
-        // 1. Main Action (Place Token / Initial Select)
-        const mainAction = getCommandAction(commandModalCard.id, -1, commandModalCard, gameState, ownerId);
+        // 1. Get ALL actions for this choice (actions may include main parts and selected option parts)
+        // We call -1 (main) and then the option index.
+        const mainActions = getCommandAction(commandModalCard.id, -1, commandModalCard, gameState, ownerId);
         
+        let rewardType: 'DRAW_REMOVED' | 'SCORE_REMOVED' | undefined;
+
         // Special Case: Inspiration (Main Action opens Counter Modal)
         if (commandModalCard.baseId?.toLowerCase().includes('inspiration')) {
-            const rewardType = optionIndex === 0 ? 'DRAW_REMOVED' : 'SCORE_REMOVED';
-            if (mainAction?.type === 'ENTER_MODE') {
-                // Pass the reward type to the next step (CounterSelectionModal logic will use this)
-                mainAction.payload = { ...mainAction.payload, rewardType };
+            rewardType = optionIndex === 0 ? 'DRAW_REMOVED' : 'SCORE_REMOVED';
+            if (mainActions.length > 0 && mainActions[0].type === 'ENTER_MODE') {
+                // Pass the reward type to the next step
+                mainActions[0].payload = { ...mainActions[0].payload, rewardType };
             }
-            queue.push(mainAction!);
-        } else {
-            if (mainAction) queue.push(mainAction);
-            // 2. Option Action (The consequence)
-            const optAction = getCommandAction(commandModalCard.id, optionIndex, commandModalCard, gameState, ownerId);
-            if (optAction) queue.push(optAction);
-        }
+        } 
+
+        // Add main actions to queue if they have targets
+        mainActions.forEach(action => {
+             // Basic target check validation could happen here, but queue processor handles it.
+             // Special case: self-buffs or global applies always valid.
+             queue.push(action);
+        });
+
+        // 2. Option Actions
+        const optActions = getCommandAction(commandModalCard.id, optionIndex, commandModalCard, gameState, ownerId);
+        optActions.forEach(action => {
+            queue.push(action);
+        });
 
         // 3. Cleanup (Discard Card) - Inspiration handles this after modal
         if (!commandModalCard.baseId?.toLowerCase().includes('inspiration')) {
@@ -137,7 +173,6 @@ export const useAppCommand = ({
         }
 
         // Cleanup Command (Inspiration)
-        // Find the announced command card
         const player = gameState.players.find(p => p.id === ownerId);
         if (player && player.announcedCard) {
              setActionQueue([{

@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { Card } from '../types';
 import { Card as CardComponent } from './Card';
@@ -19,16 +18,12 @@ export const CommandModal: React.FC<CommandModalProps> = ({ isOpen, card, player
     const displayCard = localized ? { ...card, ...localized } : card;
     const abilityText = displayCard.ability || "";
 
-    // Parse Ability Text for 2 Options
+    // Parse Ability Text for N Options
     // Expected format: "● Option 1 Text... \n● Option 2 Text..."
     // Extracts text starting from ● up to the next ● or end of string.
     const parsedOptions = React.useMemo(() => {
         const parts = abilityText.split('●').map(s => s.trim()).filter(s => s.length > 0);
-        
-        return {
-            opt1: parts[0] || "Option 1",
-            opt2: parts[1] || "Option 2"
-        };
+        return parts;
     }, [abilityText]);
 
     if (!isOpen) return null;
@@ -47,24 +42,26 @@ export const CommandModal: React.FC<CommandModalProps> = ({ isOpen, card, player
 
                 {/* Right: Selection Interface */}
                 <div className="w-2/3 flex flex-col">
-                    <h3 className="text-xl font-bold text-white mb-4 border-b border-gray-700 pb-2">Select Mode</h3>
+                    <h3 className="text-xl font-bold text-white mb-4 border-b border-gray-700 pb-2">Select Module</h3>
                     
-                    <div className="flex flex-col gap-3 flex-grow justify-center">
-                        <button 
-                            onClick={() => onConfirm(0)}
-                            className="group relative bg-gray-800 hover:bg-indigo-900 border-2 border-gray-600 hover:border-indigo-400 rounded-lg p-4 transition-all duration-200 text-left shadow-lg hover:shadow-indigo-500/20 flex items-start gap-4"
-                        >
-                            <div className="bg-gray-700 text-gray-400 w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-xs group-hover:bg-indigo-500 group-hover:text-white transition-colors mt-1">1</div>
-                            <p className="text-gray-200 group-hover:text-white text-base font-medium leading-snug whitespace-pre-wrap">{parsedOptions.opt1}</p>
-                        </button>
-
-                        <button 
-                            onClick={() => onConfirm(1)}
-                            className="group relative bg-gray-800 hover:bg-indigo-900 border-2 border-gray-600 hover:border-indigo-400 rounded-lg p-4 transition-all duration-200 text-left shadow-lg hover:shadow-indigo-500/20 flex items-start gap-4"
-                        >
-                            <div className="bg-gray-700 text-gray-400 w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-xs group-hover:bg-indigo-500 group-hover:text-white transition-colors mt-1">2</div>
-                            <p className="text-gray-200 group-hover:text-white text-base font-medium leading-snug whitespace-pre-wrap">{parsedOptions.opt2}</p>
-                        </button>
+                    <div className="flex flex-col gap-3 flex-grow justify-center overflow-y-auto max-h-[60vh] pr-2">
+                        {parsedOptions.map((optionText, index) => (
+                            <button 
+                                key={index}
+                                onClick={() => onConfirm(index)}
+                                className="group relative bg-gray-800 hover:bg-indigo-900 border-2 border-gray-600 hover:border-indigo-400 rounded-lg p-4 transition-all duration-200 text-left shadow-lg hover:shadow-indigo-500/20 flex items-start gap-4 shrink-0"
+                            >
+                                <div className="bg-gray-700 text-gray-400 w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-full font-bold text-xs group-hover:bg-indigo-500 group-hover:text-white transition-colors mt-1">
+                                    {index + 1}
+                                </div>
+                                <p className="text-gray-200 group-hover:text-white text-base font-medium leading-snug whitespace-pre-wrap">
+                                    {optionText}
+                                </p>
+                            </button>
+                        ))}
+                        {parsedOptions.length === 0 && (
+                            <div className="text-gray-500 text-center italic">No selectable modules found on this card.</div>
+                        )}
                     </div>
 
                     <div className="mt-6 flex justify-end">

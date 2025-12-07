@@ -68,6 +68,15 @@
   animation: float-up 1.5s ease-out forwards;
 }
 
+@keyframes fade-out {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.animate-fade-out {
+  animation: fade-out 0.75s ease-out forwards;
+}
+
 /* Hero Foil Effect - Automatic Animation */
 .hero-foil-overlay {
   background: linear-gradient(

@@ -1,10 +1,12 @@
 import type { Card, GameState, AbilityAction } from '../types';
 
-export const isLine = (r1: number, c1: number, r2: number, c2: number): boolean => {
+// Helper functions locally if targeting.ts is not imported for these specific checks to avoid circular deps
+// But ideally we use the ones from targeting or define simple ones here.
+const checkLine = (r1: number, c1: number, r2: number, c2: number): boolean => {
     return r1 === r2 || c1 === c2;
 };
 
-export const isAdjacent = (r1: number, c1: number, r2: number, c2: number): boolean => {
+const checkAdj = (r1: number, c1: number, r2: number, c2: number): boolean => {
     return Math.abs(r1 - r2) + Math.abs(c1 - c2) === 1;
 };
 
@@ -20,9 +22,6 @@ const hasAbilityKeyword = (ability: string, keyword: string): boolean => {
 
 /**
  * Determines if a specific card can be activated in the current state.
- * Priority 1: Deploy Ability (if not consumed)
- * Priority 2: Phase-specific Ability (if not used in this phase)
- * Condition: If "Support =>", must have Support status.
  */
 export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPlayerId: number | undefined): boolean => {
     if (activeTurnPlayerId !== card.ownerId) return false;
@@ -32,19 +31,15 @@ export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPla
 
     // Helper to check Support prerequisite
     const checkSupport = (text: string): boolean => {
-        // Regex to match "Support => [Key]" or "Support => ... [Key]"
-        // Simplified: if text has "support =>" case insensitive, check status.
         if (text.toLowerCase().includes('support ⇒')) {
             return hasStatus(card, 'Support', activeTurnPlayerId);
         }
-        return true; // No support requirement found
+        return true; 
     };
 
     // === 1. CHECK DEPLOY ABILITY ===
-    // Rule: Deploy is available if not consumed.
     if (!card.deployAbilityConsumed) {
         if (hasAbilityKeyword(abilityText, 'deploy:')) {
-            // Check if Deploy part requires support (e.g. "Support => Deploy:")
             if (hasAbilityKeyword(abilityText, 'support ⇒ deploy:')) {
                 return hasStatus(card, 'Support', activeTurnPlayerId);
             }
@@ -53,15 +48,13 @@ export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPla
     }
 
     // === 2. CHECK PHASE ABILITY ===
-    // Rule: Can only be used if not used in this phase yet.
     if (card.abilityUsedInPhase !== phaseIndex) {
         let phaseKeyword = '';
         if (phaseIndex === 0) phaseKeyword = 'setup:';
-        if (phaseIndex === 1) phaseKeyword = 'act:';
+        if (phaseIndex === 1) phaseKeyword = 'act:'; // Act usually implies Command phase, but some units might have Act:
         if (phaseIndex === 2) phaseKeyword = 'commit:';
 
         if (phaseKeyword && hasAbilityKeyword(abilityText, phaseKeyword)) {
-             // Check if THIS phase ability requires support
              if (hasAbilityKeyword(abilityText, `support ⇒ ${phaseKeyword}`)) {
                  return hasStatus(card, 'Support', activeTurnPlayerId);
              }
@@ -69,11 +62,7 @@ export const canActivateAbility = (card: Card, phaseIndex: number, activeTurnPla
         }
     }
 
-    // Special Case for COMMAND cards (always usable during phases 1 and 3 if in hand/announced)
-    if (card.deck === 'Command') {
-        if (phaseIndex === 1 || phaseIndex === 2) return true;
-    }
-
+    // Commands are handled separately in useAppCommand via Main Phase logic
     return false;
 };
 
@@ -89,14 +78,12 @@ export const getCardAbilityAction = (
     if (!card.deployAbilityConsumed) {
         const deployAction = getDeployAction(card, gameState, localPlayerId as number, coords);
         if (deployAction) {
-            // Ensure we respect Support requirement for Deploy too
+            // Check support for Deploy
             const abilityText = card.ability || '';
-            if (hasAbilityKeyword(abilityText, 'support ⇒ deploy:')) {
-                if (!hasStatus(card, 'Support', localPlayerId as number)) {
-                    // Blocked by Support
-                }
+            if (hasAbilityKeyword(abilityText, 'support ⇒ deploy:') && !hasStatus(card, 'Support', localPlayerId as number)) {
+                return null;
             }
-            if (deployAction) return { ...deployAction, isDeployAbility: true };
+            return { ...deployAction, isDeployAbility: true };
         }
     }
 
@@ -120,7 +107,8 @@ const getDeployAction = (
 ): AbilityAction | null => {
     const name = card.name.toLowerCase();
     
-    const hasSup = hasStatus(card, 'Support', ownerId);
+    // NOTE: Command card logic has been moved to utils/commandLogic.ts
+    // Only Units remain here.
 
     // SYNCHROTECH
     if (name.includes('ip dept agent')) {
@@ -149,9 +137,9 @@ const getDeployAction = (
     if (name.includes('mr. pearl')) {
         return { 
             type: 'OPEN_MODAL', 
-            mode: 'SEARCH_DECK', // Reusing search deck modal infrastructure but pointing to discard
+            mode: 'SEARCH_DECK',
             sourceCard: card,
-            payload: { filterType: 'Unit', actionType: 'RETRIEVE_FROM_DISCARD' } // Custom flag for discard source
+            payload: { filterType: 'Unit', actionType: 'RETRIEVE_FROM_DISCARD' }
         };
     }
 
@@ -162,7 +150,7 @@ const getDeployAction = (
             mode: 'SWAP_POSITIONS',
             sourceCard: card,
             sourceCoords: coords,
-            payload: { filter: (target: Card, r: number, c: number) => isAdjacent(r, c, coords.row, coords.col) }
+            payload: { filter: (target: Card, r: number, c: number) => checkAdj(r, c, coords.row, coords.col) }
         };
     }
     if (name.includes('data liberator')) {
@@ -192,13 +180,13 @@ const getDeployAction = (
         return { type: 'ENTER_MODE', mode: 'PRINCEPS_SHIELD_THEN_AIM', sourceCard: card, sourceCoords: coords, payload: {} };
     }
     if (name.includes('immunis')) {
-        if (hasSup) {
+        if (hasStatus(card, 'Support', ownerId)) {
             return {
                 type: 'OPEN_MODAL',
                 mode: 'IMMUNIS_RETRIEVE',
                 sourceCard: card,
                 sourceCoords: coords,
-                payload: { filter: (r: number, c: number) => isAdjacent(r, c, coords.row, coords.col) }
+                payload: { filter: (r: number, c: number) => checkAdj(r, c, coords.row, coords.col) }
             };
         }
     }
@@ -208,7 +196,6 @@ const getDeployAction = (
 
     // FUSION
     if (name.includes('code keeper')) {
-        // Rule 3: Exploit ALL opponent cards with threat automatically.
         return {
             type: 'GLOBAL_AUTO_APPLY',
             payload: {
@@ -224,7 +211,6 @@ const getDeployAction = (
         return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1 };
     }
     if (name.includes('signal prophet')) {
-        // Rule 3: Exploit ALL own cards with support automatically.
         return {
             type: 'GLOBAL_AUTO_APPLY',
             payload: {
@@ -244,18 +230,7 @@ const getDeployAction = (
             mode: 'ABR_DEPLOY_SHIELD_AIM',
             sourceCard: card,
             sourceCoords: coords,
-            payload: {
-                filter: (target: Card) => {
-                    if (target.ownerId === ownerId) return false;
-                    // Check teammate
-                    const actor = gameState.players.find(p => p.id === ownerId);
-                    const targetPlayer = gameState.players.find(p => p.id === target.ownerId);
-                    if (actor?.teamId !== undefined && targetPlayer?.teamId !== undefined && actor.teamId === targetPlayer.teamId) return false;
-
-                    // Has Threat from ME
-                    return target.statuses?.some(s => s.type === 'Threat' && s.addedByPlayerId === ownerId);
-                }
-            }
+            payload: {} // Logic moved to Hook
          };
     }
     if (name.includes('reclaimed "gawain"')) {
@@ -266,12 +241,10 @@ const getDeployAction = (
             type: 'OPEN_MODAL',
             mode: 'SEARCH_DECK',
             sourceCard: card,
-            payload: { filterType: 'Any' } // Search for ANY card
+            payload: { filterType: 'Any' }
         };
     }
     if (name.includes('edith byron')) {
-        // Deploy: Shield 1. Place Recon Drone.
-        // We trigger SHIELD_SELF_THEN_SPAWN
         return {
             type: 'ENTER_MODE',
             mode: 'SHIELD_SELF_THEN_SPAWN',
@@ -281,7 +254,6 @@ const getDeployAction = (
         };
     }
     if (name.includes('pinkunoneko')) {
-        // Deploy: Stun adjacent opponent.
         return {
             type: 'CREATE_STACK',
             tokenType: 'Stun',
@@ -307,10 +279,9 @@ const getDeployAction = (
         };
     }
 
-    // Generic fallback
+    // Generic fallback for any unit
     if (card.ability.toLowerCase().includes('deploy:')) {
          if (card.ability.toLowerCase().includes('shield 1')) {
-             // Rule 2: Self only, automatic
              return { 
                  type: 'GLOBAL_AUTO_APPLY', 
                  payload: { 
@@ -373,7 +344,7 @@ const getPhaseAction = (
                 sourceCoords: coords,
                 payload: {
                     actionType: 'DESTROY',
-                    filter: (target: Card, r: number, c: number) => isLine(r, c, coords.row, coords.col) && hasStatus(target, 'Aim')
+                    filter: (target: Card, r: number, c: number) => checkLine(r, c, coords.row, coords.col) && hasStatus(target, 'Aim')
                 }
             };
         }
@@ -385,7 +356,7 @@ const getPhaseAction = (
                 sourceCoords: coords,
                 payload: {
                     actionType: 'DESTROY',
-                    filter: (target: Card, r: number, c: number) => isLine(r, c, coords.row, coords.col) && hasStatus(target, 'Aim', ownerId)
+                    filter: (target: Card, r: number, c: number) => checkLine(r, c, coords.row, coords.col) && hasStatus(target, 'Aim', ownerId)
                 }
             };
         }
@@ -400,7 +371,6 @@ const getPhaseAction = (
             };
         }
         if (name.includes('devout synthetic')) {
-            // Requirement removed per request
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
@@ -409,7 +379,7 @@ const getPhaseAction = (
                 payload: {
                     actionType: 'DESTROY',
                     filter: (target: Card, r: number, c: number) => 
-                        isAdjacent(r, c, coords.row, coords.col) && 
+                        checkAdj(r, c, coords.row, coords.col) && 
                         target.ownerId !== ownerId && 
                         (hasStatus(target, 'Threat', ownerId) || hasStatus(target, 'Stun', ownerId))
                 }
@@ -425,7 +395,6 @@ const getPhaseAction = (
 
         // Neutral Setup Abilities
         if (name.includes('reclaimed "gawain"')) {
-            // Requirement removed per request
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
@@ -434,18 +403,16 @@ const getPhaseAction = (
                 payload: {
                     actionType: 'DESTROY',
                     filter: (target: Card, r: number, c: number) => 
-                        isAdjacent(r, c, coords.row, coords.col) && 
+                        checkAdj(r, c, coords.row, coords.col) && 
                         target.ownerId !== ownerId && 
                         (hasStatus(target, 'Threat', ownerId) || hasStatus(target, 'Stun', ownerId))
                 }
             };
         }
         if (name.includes('edith byron')) {
-            // Setup: Move to any cell in line. (Same as Patrol Agent)
             return { type: 'ENTER_MODE', mode: 'PATROL_MOVE', sourceCard: card, sourceCoords: coords, payload: {} };
         }
         if (name.includes('pinkunoneko')) {
-            // Setup: Destroy adjacent with threat/stun. May move to an adjacent cell.
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
@@ -454,18 +421,17 @@ const getPhaseAction = (
                 payload: {
                     actionType: 'DESTROY',
                     filter: (target: Card, r: number, c: number) => 
-                        isAdjacent(r, c, coords.row, coords.col) && 
+                        checkAdj(r, c, coords.row, coords.col) && 
                         (hasStatus(target, 'Threat', ownerId) || hasStatus(target, 'Stun', ownerId)),
                     chainedAction: {
                         type: 'ENTER_MODE',
                         mode: 'SELECT_CELL',
-                        payload: { range: 1, allowSelf: true } // Range 1 = Adjacent. Allow Self = "May move"
+                        payload: { range: 1, allowSelf: true }
                     }
                 }
             };
         }
         if (name.includes('maria "eleftheria"')) {
-            // Setup: Destroy card with aim.
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
@@ -476,33 +442,28 @@ const getPhaseAction = (
         }
         if (name.includes('zius')) {
             if (!hasSup) return null;
-            // 1. Attach 1 Exploit token to cursor (valid target: any card)
-            // 2. Chained action: Select a line intersecting Zius (firstCoords = Zius's coords)
-            // 3. Score for own exploits in that line (handled by ZIUS_SCORING action type)
             return {
                 type: 'CREATE_STACK',
                 tokenType: 'Exploit',
                 count: 1,
                 sourceCard: card,
-                sourceCoords: coords, // Origin is Zius
+                sourceCoords: coords,
                 chainedAction: {
                     type: 'ENTER_MODE',
                     mode: 'SELECT_LINE_END',
                     sourceCard: card,
-                    sourceCoords: coords, // Anchors the ability to Zius
+                    sourceCoords: coords,
                     payload: {
                         actionType: 'ZIUS_SCORING',
-                        firstCoords: coords // Forces the line to intersect Zius
+                        firstCoords: coords 
                     }
                 }
             };
         }
         if (name.includes('reverend')) {
-            // Setup: Exploit any card.
             return { type: 'CREATE_STACK', tokenType: 'Exploit', count: 1, sourceCard: card, sourceCoords: coords };
         }
         if (name.includes('finn')) {
-            // Setup: Move any of your cards 1 or 2 cells.
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_UNIT_FOR_MOVE',
@@ -515,7 +476,6 @@ const getPhaseAction = (
             };
         }
         if (name.includes('lucius')) {
-            // Setup: Destroy card with aim in line.
             return {
                 type: 'ENTER_MODE',
                 mode: 'SELECT_TARGET',
@@ -523,7 +483,7 @@ const getPhaseAction = (
                 sourceCoords: coords,
                 payload: {
                     actionType: 'DESTROY',
-                    filter: (target: Card, r: number, c: number) => isLine(r, c, coords.row, coords.col) && hasStatus(target, 'Aim')
+                    filter: (target: Card, r: number, c: number) => checkLine(r, c, coords.row, coords.col) && hasStatus(target, 'Aim')
                 }
             };
         }
@@ -588,7 +548,7 @@ const getPhaseAction = (
                 mode: 'REVEAL_ENEMY',
                 sourceCard: card,
                 sourceCoords: coords,
-                payload: { filter: (target: Card, r: number, c: number) => isAdjacent(r, c, coords.row, coords.col) && target.ownerId !== ownerId }
+                payload: { filter: (target: Card, r: number, c: number) => checkAdj(r, c, coords.row, coords.col) && target.ownerId !== ownerId }
             };
         }
         if (name.includes('censor')) {
@@ -598,7 +558,6 @@ const getPhaseAction = (
         if (name.includes('walking turret')) {
             if (!hasSup) return null;
             if (hasStatus(card, 'Shield')) return null;
-            // Rule 2: Automatic shield on self
             return { 
                 type: 'GLOBAL_AUTO_APPLY', 
                 payload: { 

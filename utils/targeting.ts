@@ -10,7 +10,9 @@ export const validateTarget = (
         excludeOwnerId?: number; 
         onlyOpponents?: boolean; 
         onlyFaceDown?: boolean;
+        targetType?: string;
         requiredTargetStatus?: string;
+        requireStatusFromSourceOwner?: boolean;
         mustBeAdjacentToSource?: boolean;
         mustBeInLineWithSource?: boolean;
         sourceCoords?: { row: number, col: number };
@@ -41,7 +43,12 @@ export const validateTarget = (
         }
     }
 
-    // 4. Only Face Down (Strict Interpretation of user rules)
+    // 4. Target Type
+    if (constraints.targetType) {
+        if (!card.types?.includes(constraints.targetType)) return false;
+    }
+
+    // 5. Only Face Down (Strict Interpretation of user rules)
     if (constraints.onlyFaceDown) {
         // Rule 1: No 'Revealed' Token allowed FROM THIS PLAYER (Universal)
         if (card.statuses?.some(s => s.type === 'Revealed' && s.addedByPlayerId === userPlayerId)) return false;
@@ -52,26 +59,32 @@ export const validateTarget = (
         }
     }
     
-    // 4.1 Unique Token Check (If adding 'Revealed', target must not already have 'Revealed' from this player)
+    // 5.1 Unique Token Check (If adding 'Revealed', target must not already have 'Revealed' from this player)
     if (constraints.tokenType === 'Revealed') {
         if (card.statuses?.some(s => s.type === 'Revealed' && s.addedByPlayerId === userPlayerId)) {
             return false;
         }
     }
 
-    // 5. Required Status
+    // 6. Required Status
     if (constraints.requiredTargetStatus) {
         if (!card.statuses?.some(s => s.type === constraints.requiredTargetStatus)) return false;
+        
+        // 6.1 Check if specific status was added by source owner (Actor)
+        if (constraints.requireStatusFromSourceOwner && userPlayerId !== null) {
+            const hasStatusFromActor = card.statuses?.some(s => s.type === constraints.requiredTargetStatus && s.addedByPlayerId === userPlayerId);
+            if (!hasStatusFromActor) return false;
+        }
     }
 
-    // 6. Adjacency
+    // 7. Adjacency
     if (constraints.mustBeAdjacentToSource && constraints.sourceCoords && target.boardCoords) {
          const { row: r1, col: c1 } = constraints.sourceCoords;
          const { row: r2, col: c2 } = target.boardCoords;
          if (Math.abs(r1 - r2) + Math.abs(c1 - c2) !== 1) return false;
     }
 
-    // 7. Line Check
+    // 8. Line Check
     if (constraints.mustBeInLineWithSource && constraints.sourceCoords && target.boardCoords) {
          const { row: r1, col: c1 } = constraints.sourceCoords;
          const { row: r2, col: c2 } = target.boardCoords;
@@ -105,7 +118,9 @@ export const calculateValidTargets = (
               excludeOwnerId: action.excludeOwnerId,
               onlyOpponents: action.onlyOpponents,
               onlyFaceDown: action.onlyFaceDown,
+              targetType: action.targetType,
               requiredTargetStatus: action.requiredTargetStatus,
+              requireStatusFromSourceOwner: action.requireStatusFromSourceOwner,
               mustBeAdjacentToSource: action.mustBeAdjacentToSource,
               mustBeInLineWithSource: action.mustBeInLineWithSource,
               sourceCoords: action.sourceCoords,
@@ -154,6 +169,15 @@ export const calculateValidTargets = (
                  }
              }
          }
+    }
+    // 1.1 Enhanced Interrogation Generic Targeting (Any Unit)
+    else if (mode === 'SELECT_TARGET' && (payload.actionType === 'ENHANCED_INT_REVEAL' || payload.actionType === 'ENHANCED_INT_MOVE')) {
+        for(let r=0; r<gridSize; r++) {
+             for(let c=0; c<gridSize; c++) {
+                 const cell = board[r][c];
+                 if (cell.card) targets.push({row: r, col: c});
+             }
+        }
     }
     // 2. Patrol Move (Empty cell in same row/col)
     else if (mode === 'PATROL_MOVE' && sourceCoords) {
@@ -239,7 +263,7 @@ export const calculateValidTargets = (
          }
     }
     // 7. Spawn Token / Select Cell
-    else if ((mode === 'SPAWN_TOKEN' || mode === 'SELECT_CELL' || mode === 'IMMUNIS_RETRIEVE') && sourceCoords) {
+    else if ((mode === 'SPAWN_TOKEN' || mode === 'SELECT_CELL' || mode === 'IMMUNIS_RETRIEVE')) {
          // Note: IMMUNIS_RETRIEVE behaves like select cell when picking the destination
          for(let r=0; r<gridSize; r++) {
              for(let c=0; c<gridSize; c++) {
@@ -256,6 +280,14 @@ export const calculateValidTargets = (
                  // For Generic Select Cell (e.g. Recon Drone move, Fusion moves)
                  // Payload allowSelf controls "Stay"
                  if (mode === 'SELECT_CELL') {
+                     // Check Move From Hand first
+                     if (payload.moveFromHand) {
+                         if (isEmpty) targets.push({row: r, col: c});
+                         continue;
+                     }
+
+                     if (!sourceCoords) continue;
+
                      const isSame = r === sourceCoords.row && c === sourceCoords.col;
                      const isGlobal = payload.range === 'global';
                      
@@ -283,7 +315,11 @@ export const calculateValidTargets = (
                              }
 
                              // If ANY intermediate cell is empty, move is valid.
-                             isValidLoc = inters.some(i => !board[i.r][i.c].card);
+                             // BOUNDS CHECK to prevent crash
+                             isValidLoc = inters.some(i => {
+                                 if (i.r < 0 || i.r >= gridSize || i.c < 0 || i.c >= gridSize) return false;
+                                 return !board[i.r][i.c].card;
+                             });
                          }
                      } else {
                          // Default to Adjacent
@@ -293,7 +329,7 @@ export const calculateValidTargets = (
                      if (isEmpty && isValidLoc) targets.push({row: r, col: c});
                      
                      if (payload.allowSelf && isSame) targets.push({row: r, col: c});
-                 } else if (mode === 'SPAWN_TOKEN') {
+                 } else if (mode === 'SPAWN_TOKEN' && sourceCoords) {
                      // For Inventive Maker Spawn (Adj)
                      const isAdj = Math.abs(r - sourceCoords.row) + Math.abs(c - sourceCoords.col) === 1;
                      if (isEmpty && isAdj) {
@@ -346,6 +382,27 @@ export const calculateValidTargets = (
              }
          }
     }
+    // 12. Select Diagonal
+    else if (mode === 'SELECT_DIAGONAL') {
+        if (!payload.firstCoords) {
+            // Step 1: Can start anywhere
+            for(let r=0; r<gridSize; r++) {
+                for(let c=0; c<gridSize; c++) {
+                    targets.push({row: r, col: c});
+                }
+            }
+        } else {
+            // Step 2: Highlight only diagonals from firstCoords
+            const { row: r1, col: c1 } = payload.firstCoords;
+            for(let r=0; r<gridSize; r++) {
+                for(let c=0; c<gridSize; c++) {
+                    if (Math.abs(r - r1) === Math.abs(c - c1)) {
+                        targets.push({row: r, col: c});
+                    }
+                }
+            }
+        }
+    }
     
     return targets;
 };
@@ -359,6 +416,15 @@ export const checkActionHasTargets = (action: AbilityAction, currentGameState: G
      
      // Special Case: Select Deck has global targets (all decks)
      if (action.mode === 'SELECT_DECK') return true;
+
+     // Special Case: Compound abilities that start with an immediate self-effect are always valid.
+     // Even if there are no targets for the secondary part (e.g., Aim), the first part (Shield) still happens.
+     if (action.mode === 'PRINCEPS_SHIELD_THEN_AIM' || 
+         action.mode === 'SHIELD_SELF_THEN_SPAWN' || 
+         action.mode === 'SHIELD_SELF_THEN_RIOT_PUSH' || 
+         action.mode === 'ABR_DEPLOY_SHIELD_AIM') {
+         return true;
+     }
      
      // Note: CREATE_STACK is now checked via calculateValidTargets as well
      if (action.type === 'CREATE_STACK') {
@@ -377,6 +443,7 @@ export const checkActionHasTargets = (action: AbilityAction, currentGameState: G
                           excludeOwnerId: action.excludeOwnerId,
                           onlyOpponents: action.onlyOpponents,
                           onlyFaceDown: action.onlyFaceDown,
+                          targetType: action.targetType,
                           tokenType: action.tokenType
                      };
                      const isValid = validateTarget(

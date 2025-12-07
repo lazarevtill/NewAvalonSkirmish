@@ -1,6 +1,5 @@
-
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
-import type { CursorStackState, GameState, AbilityAction, DragItem, DropTarget } from '../types';
+import { useRef, useEffect, useLayoutEffect } from 'react';
+import type { CursorStackState, GameState, AbilityAction, DragItem, DropTarget, CommandContext } from '../types';
 import { validateTarget } from '../utils/targeting';
 import { countersDatabase } from '../contentDatabase';
 
@@ -13,6 +12,10 @@ interface UseAppCountersProps {
     requestCardReveal: (data: any, playerId: number) => void;
     interactionLock: React.MutableRefObject<boolean>;
     abilityMode: AbilityAction | null;
+    setCommandContext: React.Dispatch<React.SetStateAction<CommandContext>>;
+    onAction: (action: AbilityAction, sourceCoords: { row: number, col: number }) => void;
+    cursorStack: CursorStackState | null;
+    setCursorStack: React.Dispatch<React.SetStateAction<CursorStackState | null>>;
 }
 
 export const useAppCounters = ({
@@ -23,20 +26,23 @@ export const useAppCounters = ({
     setAbilityMode,
     requestCardReveal,
     interactionLock,
-    abilityMode
+    abilityMode,
+    setCommandContext,
+    onAction,
+    cursorStack,
+    setCursorStack
 }: UseAppCountersProps) => {
-    const [cursorStack, setCursorStack] = useState<CursorStackState | null>(null);
     const cursorFollowerRef = useRef<HTMLDivElement>(null);
     const mousePos = useRef({ x: 0, y: 0 });
     const lastClickPos = useRef<{x: number, y: number} | null>(null);
 
     // Initial positioning layout effect
     useLayoutEffect(() => {
-        if ((cursorStack || abilityMode) && cursorFollowerRef.current) {
+        if (cursorStack && cursorFollowerRef.current) {
             const { x, y } = mousePos.current;
             cursorFollowerRef.current.style.transform = `translate(${x + 2}px, ${y + 2}px)`;
         }
-    }, [cursorStack, abilityMode]);
+    }, [cursorStack]);
 
     // Mouse movement tracking for custom cursor
     useEffect(() => {
@@ -53,16 +59,16 @@ export const useAppCounters = ({
     // Handle dropping counters (global mouse up)
     useEffect(() => {
         const handleGlobalMouseUp = (e: MouseEvent) => {
+            if (e.button !== 0) return; // Prevent action on right-click
             if (!cursorStack) return;
             const target = document.elementFromPoint(e.clientX, e.clientY);
             
             // Determine who is performing the action (Effective Actor)
             let effectiveActorId = localPlayerId;
-            if (cursorStack.sourceCoords) {
+            if (cursorStack.sourceCoords && cursorStack.sourceCoords.row >= 0) {
                 const sourceCard = gameState.board[cursorStack.sourceCoords.row][cursorStack.sourceCoords.col].card;
                 if (sourceCard) effectiveActorId = sourceCard.ownerId || localPlayerId;
             } else if (gameState.activeTurnPlayerId) {
-                // Fallback for actions without source coords (e.g. from panel) - check if it's a dummy turn
                 const activePlayer = gameState.players.find(p => p.id === gameState.activeTurnPlayerId);
                 if (activePlayer?.isDummy) effectiveActorId = activePlayer.id;
             }
@@ -83,6 +89,7 @@ export const useAppCounters = ({
                             excludeOwnerId: cursorStack.excludeOwnerId,
                             onlyOpponents: cursorStack.onlyOpponents || (cursorStack.targetOwnerId === -1),
                             onlyFaceDown: cursorStack.onlyFaceDown,
+                            targetType: cursorStack.targetType,
                             requiredTargetStatus: cursorStack.requiredTargetStatus,
                             tokenType: cursorStack.type 
                         };
@@ -99,11 +106,11 @@ export const useAppCounters = ({
                         if (cursorStack.type === 'Revealed' && playerId !== effectiveActorId && !targetPlayer.isDummy) {
                              if (localPlayerId !== null) {
                                  requestCardReveal({ source: 'hand', ownerId: playerId, cardIndex }, localPlayerId);
-                                 if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
+                                 if (cursorStack.sourceCoords && cursorStack.sourceCoords.row >= 0) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
                                  if (cursorStack.count > 1) {
                                      setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
                                  } else {
-                                     if (cursorStack.chainedAction) setAbilityMode(cursorStack.chainedAction);
+                                     if (cursorStack.chainedAction) onAction(cursorStack.chainedAction, cursorStack.sourceCoords || {row: -1, col: -1});
                                      setCursorStack(null);
                                  }
                                  interactionLock.current = true;
@@ -117,11 +124,11 @@ export const useAppCounters = ({
                             statusType: cursorStack.type,
                             count: 1 
                          }, { target: 'hand', playerId, cardIndex, boardCoords: undefined }); 
-                         if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
+                         if (cursorStack.sourceCoords && cursorStack.sourceCoords.row >= 0) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
                          if (cursorStack.count > 1) {
                              setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
                          } else {
-                             if (cursorStack.chainedAction) setAbilityMode(cursorStack.chainedAction);
+                             if (cursorStack.chainedAction) onAction(cursorStack.chainedAction, cursorStack.sourceCoords || {row: -1, col: -1});
                              setCursorStack(null);
                          }
                          interactionLock.current = true;
@@ -146,6 +153,7 @@ export const useAppCounters = ({
                             excludeOwnerId: cursorStack.excludeOwnerId,
                             onlyOpponents: cursorStack.onlyOpponents || (cursorStack.targetOwnerId === -1),
                             onlyFaceDown: cursorStack.onlyFaceDown,
+                            targetType: cursorStack.targetType,
                             requiredTargetStatus: cursorStack.requiredTargetStatus,
                             mustBeAdjacentToSource: cursorStack.mustBeAdjacentToSource,
                             mustBeInLineWithSource: cursorStack.mustBeInLineWithSource,
@@ -177,11 +185,11 @@ export const useAppCounters = ({
                                  }, { target: 'board', boardCoords: { row, col }});
                              }
                              
-                             if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
+                             if (cursorStack.sourceCoords && cursorStack.sourceCoords.row >= 0) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
                              if (cursorStack.count > 1) {
                                  setCursorStack(prev => prev ? ({ ...prev, count: prev.count - 1 }) : null);
                              } else {
-                                 if (cursorStack.chainedAction) setAbilityMode(cursorStack.chainedAction);
+                                 if (cursorStack.chainedAction) onAction(cursorStack.chainedAction, cursorStack.sourceCoords || {row: -1, col: -1});
                                  setCursorStack(null);
                              }
                              interactionLock.current = true;
@@ -198,11 +206,43 @@ export const useAppCounters = ({
                             statusType: cursorStack.type,
                             count: amountToDrop
                         }, { target: 'board', boardCoords: { row, col }});
-                         if (cursorStack.sourceCoords) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
+                        
+                        // NEW: Record context for commands like False Orders / Temporary Shelter
+                        if (cursorStack.recordContext) {
+                            setCommandContext(prev => ({
+                                ...prev,
+                                lastMovedCardCoords: { row, col },
+                                lastMovedCardId: targetCard.id
+                            }));
+                        }
+
+                         if (cursorStack.sourceCoords && cursorStack.sourceCoords.row >= 0) markAbilityUsed(cursorStack.sourceCoords, cursorStack.isDeployAbility);
                         if (cursorStack.count > amountToDrop) {
                             setCursorStack(prev => prev ? ({ ...prev, count: prev.count - amountToDrop }) : null);
                         } else {
-                            if (cursorStack.chainedAction) setAbilityMode(cursorStack.chainedAction);
+                            if (cursorStack.chainedAction) {
+                                // Manual Context Injection:
+                                // If we just recorded context, inject it into the chained action immediately.
+                                // This bypasses the async state update delay of `commandContext`.
+                                const chained = { ...cursorStack.chainedAction };
+                                
+                                if (cursorStack.recordContext) {
+                                    // If we are chaining into a SELECT_CELL mode (like Temporary Shelter),
+                                    // we usually want to move the card we just targeted.
+                                    if (chained.mode === 'SELECT_CELL') {
+                                        chained.sourceCard = targetCard;
+                                        chained.sourceCoords = { row, col };
+                                        chained.recordContext = true; // Continue passing context if needed
+                                    }
+                                    
+                                    // NEW: Also inject for GLOBAL_AUTO_APPLY (Temporary Shelter Module 1 - Remove Aim)
+                                    if (chained.type === 'GLOBAL_AUTO_APPLY') {
+                                        chained.sourceCoords = { row, col };
+                                    }
+                                }
+
+                                onAction(chained, cursorStack.sourceCoords || {row: -1, col: -1});
+                            }
                             setCursorStack(null);
                         }
                         interactionLock.current = true;
@@ -228,7 +268,7 @@ export const useAppCounters = ({
         return () => {
             window.removeEventListener('mouseup', handleGlobalMouseUp);
         };
-    }, [cursorStack, handleDrop, gameState, localPlayerId, requestCardReveal, markAbilityUsed, setAbilityMode, interactionLock]);
+    }, [cursorStack, handleDrop, gameState, localPlayerId, requestCardReveal, markAbilityUsed, setAbilityMode, interactionLock, setCommandContext, onAction, setCursorStack]);
 
     const handleCounterMouseDown = (type: string, e: React.MouseEvent) => {
         lastClickPos.current = { x: e.clientX, y: e.clientY };
@@ -240,8 +280,6 @@ export const useAppCounters = ({
     };
 
     return {
-        cursorStack,
-        setCursorStack,
         cursorFollowerRef,
         handleCounterMouseDown
     };

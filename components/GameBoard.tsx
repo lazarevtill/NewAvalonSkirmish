@@ -1,4 +1,3 @@
-
 /**
  * @file Renders the main game board and its cells.
  */
@@ -177,6 +176,17 @@ const GridCell: React.FC<{
            <div className="absolute inset-0 rounded-lg bg-cyan-400 bg-opacity-30 animate-pulse pointer-events-none z-10"></div>
       )}
 
+      {/* Visual "No Target" indicator */}
+      {showNoTarget && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+            <img 
+                src="https://res.cloudinary.com/dxxh6meej/image/upload/v1763978163/no_tarket_mic5sm.png" 
+                alt="No Target" 
+                className="w-16 h-16 object-contain animate-fade-out drop-shadow-[0_0_5px_rgba(255,0,0,0.8)]"
+            />
+        </div>
+      )}
+
       {cell.card && (
         <div
           key={cell.card.id}
@@ -221,12 +231,6 @@ const GridCell: React.FC<{
               activeTurnPlayerId={activeTurnPlayerId}
               disableActiveHighlights={disableActiveHighlights}
             />
-            {/* No Target Overlay - z-50 */}
-            {showNoTarget && (
-                <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none animate-pulse">
-                        <img src="https://res.cloudinary.com/dxxh6meej/image/upload/v1763978163/no_tarket_mic5sm.png" alt="No Target" className="w-4/5 h-4/5 object-contain drop-shadow-lg opacity-90" />
-                </div>
-            )}
         </div>
       )}
     </div>

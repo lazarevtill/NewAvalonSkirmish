@@ -478,6 +478,7 @@ export const useGameState = () => {
             const lastIndex = card.statuses.map(s => s.type).lastIndexOf(status);
             if (lastIndex > -1) card.statuses.splice(lastIndex, 1);
         }
+        newState.board = recalculateBoardStatuses(newState);
         return newState;
     });
   }, [updateState]);
@@ -491,6 +492,7 @@ export const useGameState = () => {
               const index = card.statuses.findIndex(s => s.type === status && s.addedByPlayerId === ownerId);
               if (index > -1) card.statuses.splice(index, 1);
           }
+          newState.board = recalculateBoardStatuses(newState);
           return newState;
       });
   }, [updateState]);
@@ -893,6 +895,8 @@ export const useGameState = () => {
                             }
                         });
                     });
+                    // Recalculate statuses after Stun removal to ensure Support/Threat are updated
+                    newState.board = recalculateBoardStatuses(newState);
                 }
 
                 let nextPlayerId = finishingPlayerId;
@@ -952,6 +956,9 @@ export const useGameState = () => {
                         }
                     });
                 });
+                
+                // Recalculate again as Resurrected removal/Stun addition changes auras
+                newState.board = recalculateBoardStatuses(newState);
 
                 return newState;
             }
@@ -978,6 +985,9 @@ export const useGameState = () => {
                         }
                     });
                 });
+                // Recalculate for phase transitions where Resurrected might expire
+                newState.board = recalculateBoardStatuses(newState);
+                
                 newState.currentPhase = nextPhaseIndex;
                 return newState;
             }
@@ -1154,6 +1164,7 @@ export const useGameState = () => {
              if (item.source !== 'board') {
                  cardToMove.enteredThisTurn = true;
                  delete cardToMove.deployAbilityConsumed;
+                 delete cardToMove.abilityUsedInPhase;
                  
                  // Lucius, The Immortal: Bonus if entered from discard
                  if (item.source === 'discard' && cardToMove.name.includes('Lucius')) {
@@ -1292,6 +1303,7 @@ export const useGameState = () => {
               const [card] = player.discard.splice(cardIndex, 1);
               card.enteredThisTurn = true;
               delete card.deployAbilityConsumed;
+              delete card.abilityUsedInPhase;
               
               // Lucius Bonus if resurrected
               if (card.name.includes('Lucius')) {
@@ -1373,6 +1385,7 @@ export const useGameState = () => {
           if (card && card.statuses) {
               card.statuses = card.statuses.filter(s => s.type !== type);
           }
+          newState.board = recalculateBoardStatuses(newState);
           return newState;
       });
   }, [updateState]);
