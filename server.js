@@ -30,8 +30,10 @@ const gameTerminationTimers = new Map(); // gameId -> NodeJS.Timeout (Empty game
 const gameInactivityTimers = new Map(); // gameId -> NodeJS.Timeout (Idle game timeout)
 const playerDisconnectTimers = new Map(); // Key: `${gameId}-${playerId}` -> NodeJS.Timeout (Player conversion timeout)
 
-const MAX_PLAYERS = 4;
-const INACTIVITY_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+const MAX_PLAYERS = parseInt(process.env.MAX_PLAYERS || '4', 10);
+const INACTIVITY_TIMEOUT_MS = parseInt(process.env.INACTIVITY_TIMEOUT_MS || '1200000', 10); // 20 minutes default
+const MAX_MESSAGE_SIZE = parseInt(process.env.MAX_MESSAGE_SIZE || '10485760', 10); // 10MB default
+const MAX_GAMES = parseInt(process.env.MAX_GAMES || '100', 10); // Maximum number of concurrent games
 
 let cardDatabase = {};
 let tokenDatabase = {};
@@ -329,12 +331,28 @@ const server = http.createServer((req, res) => {
     // This server is now primarily for WebSocket upgrades and serving the production build.
     // For development, use the Vite dev server (`npm run dev`).
 
-    const safeUrl = path.normalize(req.url).replace(/^(\.\.[\/\\])+/, '');
+    // Security: Prevent path traversal attacks
+    if (!req.url) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('Bad Request');
+        return;
+    }
+
+    const safeUrl = path.normalize(req.url.split('?')[0]).replace(/^(\.\.[\/\\])+/, '');
     let filePath = path.join(DIST_PATH, safeUrl);
 
     // Default to index.html for root path
     if (safeUrl === '/') {
         filePath = path.join(DIST_PATH, 'index.html');
+    }
+
+    // Security: Ensure the resolved path is within DIST_PATH
+    const resolvedPath = path.resolve(filePath);
+    const resolvedDistPath = path.resolve(DIST_PATH);
+    if (!resolvedPath.startsWith(resolvedDistPath)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain' });
+        res.end('Forbidden');
+        return;
     }
 
     fs.readFile(filePath, (error, content) => {
@@ -350,7 +368,10 @@ const server = http.createServer((req, res) => {
                         // For the main HTML file, instruct browser to always re-validate.
                         res.writeHead(200, { 
                             'Content-Type': 'text/html',
-                            'Cache-Control': 'no-cache, must-revalidate' 
+                            'Cache-Control': 'no-cache, must-revalidate',
+                            'X-Content-Type-Options': 'nosniff',
+                            'X-Frame-Options': 'DENY',
+                            'X-XSS-Protection': '1; mode=block'
                         });
                         res.end(fallbackContent);
                     }
@@ -358,7 +379,7 @@ const server = http.createServer((req, res) => {
             } else {
                 console.error(`Server error for ${filePath}: ${error.code}`);
                 res.writeHead(500);
-                res.end(`Server Error: ${error.code}`);
+                res.end('Server Error');
             }
             return;
         }
@@ -373,11 +394,18 @@ const server = http.createServer((req, res) => {
             '.jpg': 'image/jpeg',
             '.svg': 'image/svg+xml',
             '.ico': 'image/x-icon',
+            '.woff': 'font/woff',
+            '.woff2': 'font/woff2',
+            '.ttf': 'font/ttf',
+            '.webp': 'image/webp'
         };
         const contentType = mimeTypes[extname] || 'application/octet-stream';
         
-        const headers = { 'Content-Type': contentType };
-        const imageExtensions = ['.png', '.jpg', '.jpeg', '.svg', '.ico'];
+        const headers = { 
+            'Content-Type': contentType,
+            'X-Content-Type-Options': 'nosniff'
+        };
+        const imageExtensions = ['.png', '.jpg', '.jpeg', '.svg', '.ico', '.webp'];
         
         if (imageExtensions.includes(extname)) {
             // For images, tell the browser to always re-validate.
@@ -395,7 +423,10 @@ const server = http.createServer((req, res) => {
 
 // --- WebSocket Server Logic ---
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ 
+    noServer: true,
+    maxPayload: MAX_MESSAGE_SIZE
+});
 
 server.on('upgrade', (request, socket, head) => {
   wss.handleUpgrade(request, socket, head, (ws) => {
@@ -495,8 +526,26 @@ const handlePlayerLeave = (gameId, playerId, isManualExit = false) => {
 wss.on('connection', ws => {
     console.log('Client connected via WebSocket');
 
+    // Rate limiting per connection
+    ws.messageCount = 0;
+    ws.lastMessageTime = Date.now();
+
     ws.on('message', message => {
         try {
+            // Rate limiting: max 100 messages per second per connection
+            const now = Date.now();
+            if (now - ws.lastMessageTime < 1000) {
+                ws.messageCount++;
+                if (ws.messageCount > 100) {
+                    console.warn('Rate limit exceeded for client');
+                    ws.send(JSON.stringify({ type: 'ERROR', message: 'Rate limit exceeded' }));
+                    return;
+                }
+            } else {
+                ws.messageCount = 0;
+                ws.lastMessageTime = now;
+            }
+
             const data = JSON.parse(message.toString());
             const { gameId } = data; // Most messages will have a gameId
             const gameState = gameId ? gameStates.get(gameId) : null;
@@ -628,6 +677,12 @@ wss.on('connection', ws => {
                       gameStates.set(gameIdToUpdate, updatedGameState);
                       broadcastState(gameIdToUpdate, updatedGameState, ws);
                     } else if (gameIdToUpdate) { // This is a new game being created
+                        // Security: Limit number of concurrent games
+                        if (gameStates.size >= MAX_GAMES) {
+                            ws.send(JSON.stringify({ type: 'ERROR', message: 'Server is at maximum capacity. Please try again later.' }));
+                            return;
+                        }
+                        
                         gameStates.set(gameIdToUpdate, updatedGameState);
                         
                         resetInactivityTimer(gameIdToUpdate); // Activity: Game created
@@ -852,9 +907,17 @@ wss.on('connection', ws => {
     });
 });
 
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
-    console.log(`Server started on http://localhost:${PORT}`);
+const PORT = parseInt(process.env.PORT || '8080', 10);
+const HOST = process.env.HOST || 'localhost';
+
+// Validate PORT is a valid number
+if (isNaN(PORT) || PORT < 1 || PORT > 65535) {
+    console.error('Invalid PORT specified. Must be between 1 and 65535.');
+    process.exit(1);
+}
+
+server.listen(PORT, HOST, () => {
+    console.log(`Server started on http://${HOST}:${PORT}`);
     console.log('WebSocket is available on the same port (ws://).');
 });
 
